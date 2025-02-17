@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>HVAC Temperature Monitor</title>
+  </head>
+  <body>
+    <h1>Temperature Monitor</h1>
+    <div id="temperature">Waiting for data...</div>
+
+    <script>
+      let pingInterval;
+
+      function connectWebSocket() {
+        if (pingInterval) clearInterval(pingInterval);
+        const ws = new WebSocket("ws://localhost:8000/ws");
+
+        ws.onmessage = function (event) {
+          document.getElementById("temperature").textContent = event.data;
+        };
+
+        ws.onopen = function () {
+          pingInterval = setInterval(() => {
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send("ping");
+            }
+          }, 30000);
+        };
+
+        ws.onerror = function (err) {
+          console.error(
+            "Socket encountered error: ",
+            err.message,
+            "Closing socket"
+          );
+          ws.close();
+        };
+
+        ws.onclose = function (e) {
+          console.log("Socket is closed. Reconnecting...", e.reason);
+          clearInterval(pingInterval);
+          setTimeout(connectWebSocket, 1000);
+        };
+      }
+
+      connectWebSocket();
+    </script>
+  </body>
+</html>

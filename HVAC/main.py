@@ -1,17 +1,32 @@
 import asyncio
 import random
+import os
 import paho.mqtt.client as mqtt
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from typing import List
+from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from typing import Set
 
 MQTT_BROKER = "localhost"
 MQTT_TOPIC = "sensor/temperature"
 
 app = FastAPI()
-websockets: List[WebSocket] = []
-
-# MQTT Client Setup
+websockets: Set[WebSocket] = set()
 mqtt_client = mqtt.Client()
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Mount the static directory
+static_dir = os.path.join(os.path.dirname(__file__), "static")
+app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 def on_connect(client, userdata, flags, rc):
     print(f"Connected to MQTT Broker with result code: {rc}")
@@ -31,19 +46,36 @@ async def publish_temperature():
         print(f"Published Temperature: {temp}°C")
 
         # Broadcast to WebSocket clients
+        disconnected = set()
         for ws in websockets:
-            await ws.send_text(f"Temperature: {temp}°C")
-
+            try:
+                await ws.send_text(f"Temperature: {temp}°C")
+            except:
+                disconnected.add(ws)
+        
+        # Remove disconnected clients
+        websockets.difference_update(disconnected)
+        
         await asyncio.sleep(2)
+
+@app.get("/")
+async def root():
+    return FileResponse(os.path.join(static_dir, "index.html"))
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    websockets.append(websocket)
+    websockets.add(websocket)
     try:
         while True:
-            await asyncio.sleep(1)
-    except WebSocketDisconnect:
+            # Keep the connection alive with ping/pong
+            try:
+                await websocket.receive_text()
+            except WebSocketDisconnect:
+                break
+    except Exception as e:
+        print(f"WebSocket error: {e}")
+    finally:
         websockets.remove(websocket)
 
 @app.on_event("startup")
