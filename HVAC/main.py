@@ -1,11 +1,12 @@
 import asyncio
 import random
 import paho.mqtt.client as mqtt
+import json
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from typing import List
 
 MQTT_BROKER = "localhost"
-MQTT_TOPIC = "sensor/temperature"
+MQTT_TOPIC = "hvac/environment/current"
 
 app = FastAPI()
 websockets: List[WebSocket] = []
@@ -19,20 +20,23 @@ def on_connect(client, userdata, flags, rc):
 mqtt_client.on_connect = on_connect
 mqtt_client.connect(MQTT_BROKER, 1883, 60)
 
-def generate_temperature():
-    """Simulates temperature sensor data."""
-    return round(random.uniform(20.0, 30.0), 2)
+def generate_sensor_data():
+    """Simulates temperature and humidity sensor data."""
+    return {
+        "temperature": round(random.uniform(20.0, 30.0), 2),
+        "humidity": round(random.uniform(30.0, 70.0), 2)
+    }
 
-async def publish_temperature():
-    """Publishes temperature data to MQTT and WebSocket clients."""
+async def publish_sensor_data():
+    """Publishes environmental data to MQTT and WebSocket clients."""
     while True:
-        temp = generate_temperature()
-        mqtt_client.publish(MQTT_TOPIC, str(temp))
-        print(f"Published Temperature: {temp}°C")
+        sensor_data = generate_sensor_data()
+        mqtt_client.publish(MQTT_TOPIC, json.dumps(sensor_data))
+        print(f"Published - Temp: {sensor_data['temperature']}°C, Humidity: {sensor_data['humidity']}%")
 
         # Broadcast to WebSocket clients
         for ws in websockets:
-            await ws.send_text(f"Temperature: {temp}°C")
+            await ws.send_text(json.dumps(sensor_data))
 
         await asyncio.sleep(2)
 
@@ -49,7 +53,7 @@ async def websocket_endpoint(websocket: WebSocket):
 @app.on_event("startup")
 async def startup_event():
     mqtt_client.loop_start()
-    asyncio.create_task(publish_temperature())
+    asyncio.create_task(publish_sensor_data())
 
 @app.on_event("shutdown")
 async def shutdown_event():
