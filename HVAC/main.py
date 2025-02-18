@@ -1,12 +1,14 @@
 import asyncio
 import random
 import os
+import json
 import paho.mqtt.client as mqtt
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Body
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from typing import Set
+from typing import Set, Dict
+from hvac_simulator import HVACSimulator, RoomParameters, HVACParameters
 
 MQTT_BROKER = "localhost"
 MQTT_TOPIC = "sensor/temperature"
@@ -28,6 +30,21 @@ app.add_middleware(
 static_dir = os.path.join(os.path.dirname(__file__), "static")
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
+# Initialize HVAC simulator with default values
+room_params = RoomParameters(
+    length=5.0,
+    breadth=4.0,
+    height=2.5,
+    current_temp=25.0,
+    target_temp=22.0
+)
+
+hvac_params = HVACParameters(
+    power=5.0
+)
+
+hvac_simulator = HVACSimulator(room_params, hvac_params)
+
 def on_connect(client, userdata, flags, rc):
     print(f"Connected to MQTT Broker with result code: {rc}")
 
@@ -35,26 +52,42 @@ mqtt_client.on_connect = on_connect
 mqtt_client.connect(MQTT_BROKER, 1883, 60)
 
 def generate_temperature():
-    """Simulates temperature sensor data."""
-    return round(random.uniform(20.0, 30.0), 2)
+    """Simulates temperature sensor data using HVAC simulator."""
+    global hvac_simulator
+    new_temp = hvac_simulator.calculate_temperature_change()
+    hvac_simulator.room.current_temp = new_temp
+    return round(new_temp, 2)
+
+# Global variable to track simulation state
+is_simulation_running = False
 
 async def publish_temperature():
-    """Publishes temperature data to MQTT and WebSocket clients."""
+    """Publishes temperature and system status data to MQTT and WebSocket clients."""
+    global is_simulation_running
     while True:
-        temp = generate_temperature()
-        mqtt_client.publish(MQTT_TOPIC, str(temp))
-        print(f"Published Temperature: {temp}°C")
+        if is_simulation_running:
+            temp = generate_temperature()
+            system_status = hvac_simulator.get_system_status()
+            
+            # Prepare message with temperature and system status
+            message = {
+                "temperature": temp,
+                "system_status": system_status
+            }
+            
+            mqtt_client.publish(MQTT_TOPIC, json.dumps(message))
+            print(f"Published Temperature: {temp}°C")
 
-        # Broadcast to WebSocket clients
-        disconnected = set()
-        for ws in websockets:
-            try:
-                await ws.send_text(f"Temperature: {temp}°C")
-            except:
-                disconnected.add(ws)
-        
-        # Remove disconnected clients
-        websockets.difference_update(disconnected)
+            # Broadcast to WebSocket clients
+            disconnected = set()
+            for ws in websockets:
+                try:
+                    await ws.send_text(json.dumps(message))
+                except:
+                    disconnected.add(ws)
+            
+            # Remove disconnected clients
+            websockets.difference_update(disconnected)
         
         await asyncio.sleep(2)
 
@@ -68,15 +101,72 @@ async def websocket_endpoint(websocket: WebSocket):
     websockets.add(websocket)
     try:
         while True:
-            # Keep the connection alive with ping/pong
             try:
-                await websocket.receive_text()
+                message = await websocket.receive_text()
+                data = json.loads(message)
+                print(f"Received message: {data}")
+
+                if data.get('type') == 'simulation_control':
+                    global is_simulation_running
+                    action = data.get('data', {}).get('action')
+                    if action == 'start':
+                        is_simulation_running = True
+                        print("Simulation started")
+                    elif action == 'stop':
+                        is_simulation_running = False
+                        print("Simulation stopped")
+                    # Send simulation status to client
+                    await websocket.send_text(json.dumps({
+                        'type': 'simulation_status',
+                        'data': {'isRunning': is_simulation_running}
+                    }))
+
+                elif data.get('type') == 'room_parameters':
+                    params = data.get('data', {})
+                    if 'targetTemp' in params:
+                        hvac_simulator.room.target_temp = float(params['targetTemp'])
+                        print(f"Updated target temperature to: {hvac_simulator.room.target_temp}°C")
+
+                elif data.get('type') == 'hvac_parameters':
+                    params = data.get('data', {})
+                    if 'power' in params:
+                        hvac_simulator.hvac.power = float(params['power'])
+                        print(f"Updated HVAC power to: {hvac_simulator.hvac.power} kW")
+
+                # Send immediate feedback
+                system_status = hvac_simulator.get_system_status()
+                await websocket.send_text(json.dumps({
+                    'system_status': system_status
+                }))
+
             except WebSocketDisconnect:
                 break
+            except json.JSONDecodeError as e:
+                print(f"Invalid JSON received: {e}")
+            except Exception as e:
+                print(f"Error processing message: {e}")
     except Exception as e:
         print(f"WebSocket error: {e}")
     finally:
         websockets.remove(websocket)
+        print("Client disconnected")
+
+@app.post("/api/calculate")
+async def calculate_hvac(params: Dict = Body(...)):
+    """Update HVAC parameters and return system status."""
+    global hvac_simulator
+    
+    # Update room parameters
+    hvac_simulator.room.length = float(params.get('length', 5.0))
+    hvac_simulator.room.breadth = float(params.get('breadth', 4.0))
+    hvac_simulator.room.height = float(params.get('width', 2.5))
+    hvac_simulator.room.target_temp = float(params.get('temperature', 22.0))
+    
+    # Update HVAC parameters
+    hvac_simulator.hvac.power = float(params.get('hvacPower', 5.0))
+    
+    # Return current system status
+    return hvac_simulator.get_system_status()
 
 @app.on_event("startup")
 async def startup_event():
