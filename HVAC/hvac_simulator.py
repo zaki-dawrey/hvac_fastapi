@@ -127,6 +127,31 @@ class HVACSimulator:
         else:
             return min(self.room.target_temp, new_temp)
 
+    def calculate_time_to_target(self) -> float:
+        """Calculate estimated time to reach target temperature in seconds."""
+        if abs(self.room.current_temp - self.room.target_temp) < 0.1:
+            return 0
+
+        cooling_capacity = self.calculate_cooling_capacity()
+        heat_gain = self.calculate_heat_gain()
+        
+        # Calculate net heat transfer rate
+        if self.room.mode.lower() == "heating":
+            net_heat = heat_gain + (cooling_capacity * (self.hvac.fan_speed / 100.0))
+        else:  # cooling mode
+            net_heat = heat_gain - (cooling_capacity * (self.hvac.fan_speed / 100.0))
+        
+        # Calculate temperature change rate (°C/s)
+        temp_change_rate = abs(
+            net_heat / (self.room_air_mass * self.specific_heat_air * 1000)
+        )
+        
+        # Calculate time needed
+        temp_difference = abs(self.room.current_temp - self.room.target_temp)
+        estimated_time = temp_difference / temp_change_rate if temp_change_rate > 0 else float('inf')
+        
+        return round(estimated_time, 2)
+
     def get_system_status(self) -> Dict[str, Any]:
         """Get current system status and calculations."""
         cooling_capacity = self.calculate_cooling_capacity()

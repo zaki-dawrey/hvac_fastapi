@@ -58,14 +58,15 @@ def generate_temperature():
     hvac_simulator.room.current_temp = new_temp
     return round(new_temp, 2)
 
-# Global variable to track simulation state
+# Global variables to track simulation state
 is_simulation_running = False
+is_simulation_paused = False
 
 async def publish_temperature():
     """Publishes temperature and system status data to MQTT and WebSocket clients."""
     global is_simulation_running
     while True:
-        if is_simulation_running:
+        if is_simulation_running and not is_simulation_paused:
             temp = generate_temperature()
             system_status = hvac_simulator.get_system_status()
             
@@ -107,31 +108,63 @@ async def websocket_endpoint(websocket: WebSocket):
                 print(f"Received message: {data}")
 
                 if data.get('type') == 'simulation_control':
-                    global is_simulation_running
+                    global is_simulation_running, is_simulation_paused
                     action = data.get('data', {}).get('action')
                     if action == 'start':
                         is_simulation_running = True
+                        is_simulation_paused = False
                         print("Simulation started")
                     elif action == 'stop':
                         is_simulation_running = False
+                        is_simulation_paused = False
                         print("Simulation stopped")
+                    elif action == 'pause':
+                        is_simulation_paused = True
+                        print("Simulation paused")
+                    elif action == 'resume':
+                        is_simulation_paused = False
+                        print("Simulation resumed")
                     # Send simulation status to client
                     await websocket.send_text(json.dumps({
                         'type': 'simulation_status',
-                        'data': {'isRunning': is_simulation_running}
+                        'data': {
+                            'isRunning': is_simulation_running,
+                            'isPaused': is_simulation_paused,
+                            'estimatedTimeToTarget': hvac_simulator.calculate_time_to_target()
+                        }
                     }))
 
                 elif data.get('type') == 'room_parameters':
                     params = data.get('data', {})
+                    # Update all room parameters
+                    if 'length' in params:
+                        hvac_simulator.room.length = float(params['length'])
+                    if 'breadth' in params:
+                        hvac_simulator.room.breadth = float(params['breadth'])
+                    if 'height' in params:
+                        hvac_simulator.room.height = float(params['height'])
+                    if 'currentTemp' in params:
+                        hvac_simulator.room.current_temp = float(params['currentTemp'])
                     if 'targetTemp' in params:
                         hvac_simulator.room.target_temp = float(params['targetTemp'])
-                        print(f"Updated target temperature to: {hvac_simulator.room.target_temp}°C")
+                    if 'externalTemp' in params:
+                        hvac_simulator.room.external_temp = float(params['externalTemp'])
+                    if 'wallInsulation' in params:
+                        hvac_simulator.room.wall_insulation = params['wallInsulation']
+                    print(f"Updated room parameters")
 
                 elif data.get('type') == 'hvac_parameters':
                     params = data.get('data', {})
+                    # Update all HVAC parameters
                     if 'power' in params:
                         hvac_simulator.hvac.power = float(params['power'])
-                        print(f"Updated HVAC power to: {hvac_simulator.hvac.power} kW")
+                    if 'cop' in params:
+                        hvac_simulator.hvac.cop = float(params['cop'])
+                    if 'airFlowRate' in params:
+                        hvac_simulator.hvac.air_flow_rate = float(params['airFlowRate'])
+                    if 'supplyTemp' in params:
+                        hvac_simulator.hvac.supply_temp = float(params['supplyTemp'])
+                    print(f"Updated HVAC parameters")
 
                 # Send immediate feedback
                 system_status = hvac_simulator.get_system_status()
@@ -159,11 +192,17 @@ async def calculate_hvac(params: Dict = Body(...)):
     # Update room parameters
     hvac_simulator.room.length = float(params.get('length', 5.0))
     hvac_simulator.room.breadth = float(params.get('breadth', 4.0))
-    hvac_simulator.room.height = float(params.get('width', 2.5))
-    hvac_simulator.room.target_temp = float(params.get('temperature', 22.0))
+    hvac_simulator.room.height = float(params.get('height', 3.0))
+    hvac_simulator.room.current_temp = float(params.get('currentTemp', 25.0))
+    hvac_simulator.room.target_temp = float(params.get('targetTemp', 22.0))
+    hvac_simulator.room.external_temp = float(params.get('externalTemp', 35.0))
+    hvac_simulator.room.wall_insulation = params.get('wallInsulation', 'medium')
     
     # Update HVAC parameters
-    hvac_simulator.hvac.power = float(params.get('hvacPower', 5.0))
+    hvac_simulator.hvac.power = float(params.get('power', 3.5))
+    hvac_simulator.hvac.cop = float(params.get('cop', 3.0))
+    hvac_simulator.hvac.air_flow_rate = float(params.get('airFlowRate', 0.5))
+    hvac_simulator.hvac.supply_temp = float(params.get('supplyTemp', 12.0))
     
     # Return current system status
     return hvac_simulator.get_system_status()
