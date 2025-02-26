@@ -3,21 +3,15 @@ import random
 import os
 import json
 import paho.mqtt.client as mqtt
-<<<<<<< HEAD
-import json
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from typing import List
-=======
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Body
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from typing import Set, Dict
 from hvac_simulator import HVACSimulator, RoomParameters, HVACParameters
->>>>>>> 1388f1175237e41cfc0330d53ff5777b47d5fd07
 
 MQTT_BROKER = "localhost"
-MQTT_TOPIC = "hvac/environment/current"
+MQTT_TOPIC = "sensor/temperature"
 
 app = FastAPI()
 websockets: Set[WebSocket] = set()
@@ -57,25 +51,6 @@ def on_connect(client, userdata, flags, rc):
 mqtt_client.on_connect = on_connect
 mqtt_client.connect(MQTT_BROKER, 1883, 60)
 
-<<<<<<< HEAD
-def generate_sensor_data():
-    """Simulates temperature and humidity sensor data."""
-    return {
-        "temperature": round(random.uniform(20.0, 30.0), 2),
-        "humidity": round(random.uniform(30.0, 70.0), 2)
-    }
-
-async def publish_sensor_data():
-    """Publishes environmental data to MQTT and WebSocket clients."""
-    while True:
-        sensor_data = generate_sensor_data()
-        mqtt_client.publish(MQTT_TOPIC, json.dumps(sensor_data))
-        print(f"Published - Temp: {sensor_data['temperature']}°C, Humidity: {sensor_data['humidity']}%")
-
-        # Broadcast to WebSocket clients
-        for ws in websockets:
-            await ws.send_text(json.dumps(sensor_data))
-=======
 def generate_temperature():
     """Simulates temperature sensor data using HVAC simulator."""
     global hvac_simulator
@@ -103,7 +78,6 @@ async def publish_temperature():
             
             mqtt_client.publish(MQTT_TOPIC, json.dumps(message))
             print(f"Published Temperature: {temp}°C")
->>>>>>> 1388f1175237e41cfc0330d53ff5777b47d5fd07
 
             # Broadcast to WebSocket clients
             disconnected = set()
@@ -236,7 +210,7 @@ async def calculate_hvac(params: Dict = Body(...)):
 @app.on_event("startup")
 async def startup_event():
     mqtt_client.loop_start()
-    asyncio.create_task(publish_sensor_data())
+    asyncio.create_task(publish_temperature())
 
 @app.on_event("shutdown")
 async def shutdown_event():
