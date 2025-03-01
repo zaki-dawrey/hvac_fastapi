@@ -151,6 +151,10 @@ async def websocket_endpoint(websocket: WebSocket):
                         hvac_simulator.room.external_temp = float(params['externalTemp'])
                     if 'wallInsulation' in params:
                         hvac_simulator.room.wall_insulation = params['wallInsulation']
+                    if 'numPeople' in params:
+                        hvac_simulator.room.num_people = int(params['numPeople'])
+                    if 'mode' in params:
+                        hvac_simulator.room.mode = params['mode']
                     print(f"Updated room parameters")
 
                 elif data.get('type') == 'hvac_parameters':
@@ -197,6 +201,8 @@ async def calculate_hvac(params: Dict = Body(...)):
     hvac_simulator.room.target_temp = float(params.get('targetTemp', 22.0))
     hvac_simulator.room.external_temp = float(params.get('externalTemp', 35.0))
     hvac_simulator.room.wall_insulation = params.get('wallInsulation', 'medium')
+    hvac_simulator.room.num_people = int(params.get('numPeople', 0))
+    hvac_simulator.room.mode = params.get('mode', 'cooling')
     
     # Update HVAC parameters
     hvac_simulator.hvac.power = float(params.get('power', 3.5))

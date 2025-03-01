@@ -1,3 +1,5 @@
 venv/
 __pycache__/
 *.pyc
+.vscode/
+.hvac_fastapi/HVAC/.vscode/
