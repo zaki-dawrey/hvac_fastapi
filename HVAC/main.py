@@ -3,21 +3,15 @@ import random
 import os
 import json
 import paho.mqtt.client as mqtt
-<<<<<<< HEAD
-import json
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from typing import List
-=======
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Body
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from typing import Set, Dict
 from hvac_simulator import HVACSimulator, RoomParameters, HVACParameters
->>>>>>> 1388f1175237e41cfc0330d53ff5777b47d5fd07
 
 MQTT_BROKER = "localhost"
-MQTT_TOPIC = "hvac/environment/current"
+MQTT_TOPIC = "sensor/temperature"
 
 app = FastAPI()
 websockets: Set[WebSocket] = set()
@@ -41,12 +35,18 @@ room_params = RoomParameters(
     length=5.0,
     breadth=4.0,
     height=2.5,
-    current_temp=25.0,
-    target_temp=22.0
+    current_temp=10,
+    target_temp=22.0,
+    external_temp=35.0,
+    wall_insulation=0.5,
+    num_people=0,
+    mode="cooling",
 )
 
 hvac_params = HVACParameters(
-    power=5.0
+    power=3.5,
+    air_flow_rate=0.5,
+    fan_speed=100.0,
 )
 
 hvac_simulator = HVACSimulator(room_params, hvac_params)
@@ -57,25 +57,6 @@ def on_connect(client, userdata, flags, rc):
 mqtt_client.on_connect = on_connect
 mqtt_client.connect(MQTT_BROKER, 1883, 60)
 
-<<<<<<< HEAD
-def generate_sensor_data():
-    """Simulates temperature and humidity sensor data."""
-    return {
-        "temperature": round(random.uniform(20.0, 30.0), 2),
-        "humidity": round(random.uniform(30.0, 70.0), 2)
-    }
-
-async def publish_sensor_data():
-    """Publishes environmental data to MQTT and WebSocket clients."""
-    while True:
-        sensor_data = generate_sensor_data()
-        mqtt_client.publish(MQTT_TOPIC, json.dumps(sensor_data))
-        print(f"Published - Temp: {sensor_data['temperature']}°C, Humidity: {sensor_data['humidity']}%")
-
-        # Broadcast to WebSocket clients
-        for ws in websockets:
-            await ws.send_text(json.dumps(sensor_data))
-=======
 def generate_temperature():
     """Simulates temperature sensor data using HVAC simulator."""
     global hvac_simulator
@@ -103,7 +84,6 @@ async def publish_temperature():
             
             mqtt_client.publish(MQTT_TOPIC, json.dumps(message))
             print(f"Published Temperature: {temp}°C")
->>>>>>> 1388f1175237e41cfc0330d53ff5777b47d5fd07
 
             # Broadcast to WebSocket clients
             disconnected = set()
@@ -177,6 +157,10 @@ async def websocket_endpoint(websocket: WebSocket):
                         hvac_simulator.room.external_temp = float(params['externalTemp'])
                     if 'wallInsulation' in params:
                         hvac_simulator.room.wall_insulation = params['wallInsulation']
+                    if 'numPeople' in params:
+                        hvac_simulator.room.num_people = int(params['numPeople'])
+                    if 'mode' in params:
+                        hvac_simulator.room.mode = params['mode']
                     print(f"Updated room parameters")
 
                 elif data.get('type') == 'hvac_parameters':
@@ -223,6 +207,8 @@ async def calculate_hvac(params: Dict = Body(...)):
     hvac_simulator.room.target_temp = float(params.get('targetTemp', 22.0))
     hvac_simulator.room.external_temp = float(params.get('externalTemp', 35.0))
     hvac_simulator.room.wall_insulation = params.get('wallInsulation', 'medium')
+    hvac_simulator.room.num_people = int(params.get('numPeople', 0))
+    hvac_simulator.room.mode = params.get('mode', "cooling")
     
     # Update HVAC parameters
     hvac_simulator.hvac.power = float(params.get('power', 3.5))
@@ -236,7 +222,7 @@ async def calculate_hvac(params: Dict = Body(...)):
 @app.on_event("startup")
 async def startup_event():
     mqtt_client.loop_start()
-    asyncio.create_task(publish_sensor_data())
+    asyncio.create_task(publish_temperature())
 
 @app.on_event("shutdown")
 async def shutdown_event():
