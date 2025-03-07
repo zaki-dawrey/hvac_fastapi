@@ -35,12 +35,18 @@ room_params = RoomParameters(
     length=5.0,
     breadth=4.0,
     height=2.5,
-    current_temp=25.0,
-    target_temp=22.0
+    current_temp=10,
+    target_temp=22.0,
+    external_temp=35.0,
+    wall_insulation=0.5,
+    num_people=0,
+    mode="cooling",
 )
 
 hvac_params = HVACParameters(
-    power=5.0
+    power=3.5,
+    air_flow_rate=0.5,
+    fan_speed=100.0,
 )
 
 hvac_simulator = HVACSimulator(room_params, hvac_params)
@@ -202,7 +208,7 @@ async def calculate_hvac(params: Dict = Body(...)):
     hvac_simulator.room.external_temp = float(params.get('externalTemp', 35.0))
     hvac_simulator.room.wall_insulation = params.get('wallInsulation', 'medium')
     hvac_simulator.room.num_people = int(params.get('numPeople', 0))
-    hvac_simulator.room.mode = params.get('mode', 'cooling')
+    hvac_simulator.room.mode = params.get('mode', "cooling")
     
     # Update HVAC parameters
     hvac_simulator.hvac.power = float(params.get('power', 3.5))
