@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import Dict, Any, Tuple, List
 
 @dataclass
-class RoomParameters:
+class HeatPumpRoomParameters:
     length: float  # meters
     breadth: float  # meters
     height: float  # meters
@@ -17,7 +17,7 @@ class RoomParameters:
     mode: str = "cooling"  # cooling/heating mode
 
 @dataclass
-class HVACParameters:
+class HeatPumpHVACParameters:
     power: float  # kW
     cop: float = 3.0  # Coefficient of Performance
     air_flow_rate: float = 0.5  # m³/s
@@ -25,8 +25,8 @@ class HVACParameters:
     fan_speed: float = 100.0  # Fan speed percentage
     time_interval: float = 1.0  # Simulation update interval in seconds
 
-class HVACSimulator:
-    def __init__(self, room: RoomParameters, hvac: HVACParameters):
+class HeatPumpSystemSimulator:
+    def __init__(self, room: HeatPumpRoomParameters, hvac: HeatPumpHVACParameters):
         self.room = room
         self.hvac = hvac
         self.specific_heat_air = 1.005  # kJ/kg·K
