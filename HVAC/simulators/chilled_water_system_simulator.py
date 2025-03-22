@@ -317,16 +317,19 @@ class ChilledWaterSystemSimulator:
         # Check if we're already at target
         if abs(self.room.current_temp - self.room.target_temp) < 0.1:
             return True
-            
-        # Direction we need to move (cooling = negative rate, heating = positive rate)
-        desired_direction = -1 if self.room.mode.lower() == "cooling" else 1
-            
+
+        # Direction we need to move
+        cooling_needed = self.room.current_temp > self.room.target_temp
+        heating_needed = self.room.current_temp < self.room.target_temp
+
         # Calculate the rate of temperature change
         current_rate = self.calculate_temp_change_rate(self.room.current_temp)
-        
-        # If rate sign matches desired direction, we're making progress
-        # Also check if rate is significant enough (not practically zero)
-        return (current_rate * desired_direction) < -1e-6
+
+        # Check if we're moving in the right direction with significant speed
+        if (cooling_needed and current_rate < -1e-6) or (heating_needed and current_rate > 1e-6):
+            return True
+    
+        return False
 
     def calculate_time_to_target(self) -> float:
         """Calculate time to reach target temperature using numerical integration."""
@@ -541,7 +544,8 @@ class ChilledWaterSystemSimulator:
             "room_volume": round(self.room_volume, 2),
             "room_floor_area": round(self.room.length * self.room.breadth, 2),
             "external_temperature": self.room.external_temp,
-            "time_to_target": round(time_to_target / 60, 1) if time_to_target != float('inf') else "Cannot reach target",            "can_reach_target": self.can_reach_target(),
+            "time_to_target": time_to_target if time_to_target != float('inf') else "Cannot reach target",
+            "can_reach_target": self.can_reach_target(),
             "temp_change_rate_per_hour": round(self.calculate_temp_change_rate(self.room.current_temp) * 3600, 4),  # °C/hour
             "rated_power_kw": self.hvac.power,
             "primary_secondary_loop": self.hvac.primary_secondary_loop,
