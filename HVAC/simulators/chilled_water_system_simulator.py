@@ -173,34 +173,58 @@ class ChilledWaterSystemSimulator:
         return total_heat_gain
 
     def calculate_energy_consumption(self, cooling_capacity: float) -> float:
-        """Calculate energy consumption in Watts with improved modeling."""
+        """Calculate energy consumption in Watts with improved modeling and hard limits."""
         # Account for part-load efficiency
         part_load_factor = min(1.0, abs(cooling_capacity) / (self.hvac.power * 1000))
-        
+
         # At part load, COP is often better than at full load
-        # This is a simple model - in reality, this curve would be more complex
         adjusted_cop = self.hvac.cop * (1 + 0.1 * (1 - part_load_factor))
-        
+
         # Chiller energy consumption (based on cooling capacity and COP)
-        chiller_energy = abs(cooling_capacity) / adjusted_cop
-        
-        # Add pump energy consumption - quadratic relationship with flow rate
+        # Limit the maximum cooling capacity that a chiller can handle
+        max_chiller_capacity = 20000  # 20kW for a typical small commercial chiller
+        limited_cooling_capacity = min(abs(cooling_capacity), max_chiller_capacity)
+        chiller_energy = limited_cooling_capacity / adjusted_cop
+
+        # Calculate pump energy with more realistic constraints
+        # Calculate base pump energy
         pump_energy = self.calculate_pump_energy()
-        
+
+        # Practical limit for pump power - typical commercial pumps
+        # Even at maximum flow, the pump shouldn't exceed a reasonable percentage of total system power
+        max_pump_percentage = 0.25  # Maximum 25% of total energy for pumping
+        max_reasonable_pump = self.hvac.power * 1000 * max_pump_percentage
+
+        # Apply a hard cap on pump energy
+        pump_energy = min(pump_energy, max_reasonable_pump)
+
         # Fan energy consumption - using fan affinity laws
         fan_energy = self.calculate_fan_energy()
-        
+
+        # Total energy is the sum of all components
         total_energy = chiller_energy + pump_energy + fan_energy
-        
+
+        # Implement a hard cap on total energy based on equipment size
+        # For a typical small commercial chiller system, it would be unrealistic 
+        # to exceed about 5x the rated power
+        absolute_max_energy = self.hvac.power * 1000 * 5
+        if total_energy > absolute_max_energy:
+            scaling_factor = absolute_max_energy / total_energy
+            chiller_energy *= scaling_factor
+            pump_energy *= scaling_factor
+            fan_energy *= scaling_factor
+            total_energy = absolute_max_energy
+
         # Store components for debugging
         self.debug_info.append({
             "chiller_energy": chiller_energy,
-            "pump_energy": pump_energy,
+            "pump_energy": pump_energy, 
             "fan_energy": fan_energy,
             "adjusted_cop": adjusted_cop,
-            "part_load_factor": part_load_factor
+            "part_load_factor": part_load_factor,
+            "limited_cooling_capacity": limited_cooling_capacity
         })
-        
+
         return total_energy
 
     def calculate_fan_energy(self) -> float:
@@ -399,23 +423,49 @@ class ChilledWaterSystemSimulator:
         return capacity
     
     def calculate_pump_energy(self) -> float:
-        """Calculate energy consumption of the chilled water pump in Watts using affinity laws."""
+        """Calculate energy consumption of the chilled water pump in Watts with more realistic scaling."""
         # Base consumption on rated pump power
         base_consumption = self.hvac.pump_power * 1000  # Convert to Watts
-        
-        # Scale based on flow rate using pump affinity laws
-        # Power is proportional to the cube of flow rate
+
+        # Flow Rate vs Flow Rate Reference (usually design flow)
         relative_flow = self.hvac.chilled_water_flow_rate / 0.5  # Normalized to default flow
-        
-        # Add system curve effect (system pressure increases with flow squared)
-        # This creates a more realistic power curve
-        pump_energy = base_consumption * (0.5 * relative_flow**2 + 0.5 * relative_flow**3)
-        
+
+        # Advanced pump curve modeling:
+        # In real VFD pumps, the power curve is flatter than cubic law suggests
+        # We use a more realistic formula: P = P_design * (a * (Q/Q_design) + b * (Q/Q_design)² + c * (Q/Q_design)³)
+        # Where a + b + c = 1 and the values are chosen to match real pump curves
+
+        a = 0.15  # Fixed power component (even at zero flow, there's some power consumption)
+        b = 0.35  # Linear component 
+        c = 0.50  # Cubic component
+
+        # More realistic pump curve
+        pump_energy = base_consumption * (
+            a + 
+            b * relative_flow + 
+            c * (relative_flow**2)  # Changed from cubic to quadratic for more realistic behavior
+        )
+
+        # Apply practical minimum power draw 
+        min_power = base_consumption * 0.2
+        pump_energy = max(min_power, pump_energy)
+
+        # Apply a hard cap based on reasonable size limits
+        # No commercial pump would exceed about 2x its rated power
+        max_power = base_consumption * 2.0
+        pump_energy = min(max_power, pump_energy)
+
+        # Additional efficiency losses from flow restrictions at very high flow rates
+        if relative_flow > 3.0:
+            # At very high flow rates, efficiency drops dramatically
+            efficiency_factor = 1.0 - min(0.5, (relative_flow - 3.0) * 0.1)  # Efficiency drops by 10% per unit above 3x flow
+            pump_energy = pump_energy / efficiency_factor  # Higher number = more energy used
+
         # Adjust for primary/secondary loop configuration
         if self.hvac.primary_secondary_loop:
             # Primary/secondary loops require additional pumping power
             pump_energy *= 1.2  # 20% more energy for additional pump
-        
+
         return pump_energy
 
     def get_system_status(self) -> Dict[str, Any]:
@@ -426,7 +476,40 @@ class ChilledWaterSystemSimulator:
         pump_energy = self.calculate_pump_energy()
         fan_energy = self.calculate_fan_energy()
         time_to_target = self.calculate_time_to_target()
+        refrigerant_flow = self.calculate_refrigerant_flow(cooling_capacity)
         
+        chiller_energy = energy_consumption - pump_energy - fan_energy
+
+        energy_components = {
+            "chiller": abs(cooling_capacity) / self.hvac.cop,
+            "pump": pump_energy,
+            "fan": fan_energy,
+        }
+
+        energy_consumption = sum(energy_components.values())
+
+        absolute_maximum = 75000  # 75kW is reasonable max for small commercial systems
+        if energy_consumption > absolute_maximum:
+            scaling_factor = absolute_maximum / energy_consumption
+            energy_components = {k: v * scaling_factor for k, v in energy_components.items()}
+            energy_consumption = absolute_maximum
+
+        # Calculate actual water flow rate based on current load
+        # In a real system, water flow varies with load to maintain delta T
+        load_factor = min(1.0, abs(cooling_capacity) / (self.hvac.power * 1000))
+    
+        # Modulate water flow based on load with a minimum flow rate
+        # This simulates the variable flow in the secondary loop
+        min_flow_rate = 0.1 if self.hvac.chilled_water_flow_rate > 0.1 else 0.05
+        actual_flow_rate = max(
+            min_flow_rate,
+            self.hvac.chilled_water_flow_rate * (0.3 + 0.7 * load_factor)
+        )
+    
+        # If the system is running, use calculated flow; otherwise use the parameter value
+        # This ensures flow displays as 0 when system is off
+        display_flow_rate = actual_flow_rate if cooling_capacity != 0 else 0
+
         # Calculate actual COP of the system
         system_cop = abs(cooling_capacity) / energy_consumption if energy_consumption > 0 else 0
         
@@ -436,10 +519,10 @@ class ChilledWaterSystemSimulator:
             "cooling_capacity_kw": round(cooling_capacity / 1000, 2),
             "cooling_capacity_btu": round(cooling_capacity * 3.412, 2),
             "energy_consumption_w": round(energy_consumption, 2),
-            "chiller_consumption_w": round(abs(cooling_capacity) / self.hvac.cop, 2),
-            "pump_consumption_w": round(pump_energy, 2),
-            "fan_consumption_w": round(fan_energy, 2),
-            "water_flow_rate_ls": self.hvac.chilled_water_flow_rate,
+            "chiller_consumption_w": round(energy_components["chiller"], 2),
+            "pump_consumption_w": round(energy_components["pump"], 2),
+            "fan_consumption_w": round(energy_components["fan"], 2),
+            "water_flow_rate_ls": round(display_flow_rate, 2),
             "water_supply_temp": self.hvac.chilled_water_supply_temp,
             "water_return_temp": self.hvac.chilled_water_return_temp,
             "water_heat_capacity_kw": round(water_capacity / 1000, 2),
@@ -458,12 +541,12 @@ class ChilledWaterSystemSimulator:
             "room_volume": round(self.room_volume, 2),
             "room_floor_area": round(self.room.length * self.room.breadth, 2),
             "external_temperature": self.room.external_temp,
-            "time_to_target_minutes": round(time_to_target / 60, 1) if time_to_target != float('inf') else "Cannot reach target",
-            "can_reach_target": self.can_reach_target(),
+            "time_to_target": round(time_to_target / 60, 1) if time_to_target != float('inf') else "Cannot reach target",            "can_reach_target": self.can_reach_target(),
             "temp_change_rate_per_hour": round(self.calculate_temp_change_rate(self.room.current_temp) * 3600, 4),  # °C/hour
             "rated_power_kw": self.hvac.power,
             "primary_secondary_loop": self.hvac.primary_secondary_loop,
-            "heat_exchanger_efficiency": self.hvac.heat_exchanger_efficiency
+            "heat_exchanger_efficiency": self.hvac.heat_exchanger_efficiency,
+            "refrigerant_flow_gs": round(refrigerant_flow, 2),
         }
         
         return status

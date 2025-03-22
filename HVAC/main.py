@@ -1,7 +1,9 @@
 import asyncio
 import random
 import os
+import math
 import json
+import datetime
 import paho.mqtt.client as mqtt
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Body, Query
 from fastapi.staticfiles import StaticFiles
@@ -9,6 +11,67 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from typing import Set, Dict, Optional
 from simulators.simulator_factory import SimulatorFactory
+
+class MonitoredDict(dict):
+    def __init__(self, *args, **kwargs):
+        self.change_log = []
+        self.simulation_states = {}  # Track simulation state per client
+        super().__init__(*args, **kwargs)
+    
+    def __setitem__(self, key, value):
+        action = "updated" if key in self else "added"
+        self.change_log.append({
+            "timestamp": datetime.datetime.now().isoformat(),
+            "action": action,
+            "key": key,
+            "value_summary": str(value)[:100]  # Truncated summary
+        })
+        super().__setitem__(key, value)
+        
+        # Initialize simulation state for new clients
+        if key not in self.simulation_states:
+            self.simulation_states[key] = {
+                "is_running": False,
+                "is_paused": False
+            }
+        
+        print(f"[MONITOR] {action.upper()} key '{key}' at {self.change_log[-1]['timestamp']}")
+    
+    def __delitem__(self, key):
+        self.change_log.append({
+            "timestamp": datetime.datetime.now().isoformat(),
+            "action": "deleted",
+            "key": key
+        })
+        if key in self.simulation_states:
+            del self.simulation_states[key]
+        super().__delitem__(key)
+        print(f"[MONITOR] DELETED key '{key}' at {self.change_log[-1]['timestamp']}")
+    
+    def set_simulation_state(self, client_id, is_running, is_paused):
+        """Set simulation state for a specific client"""
+        if client_id in self:
+            if client_id not in self.simulation_states:
+                self.simulation_states[client_id] = {}
+            self.simulation_states[client_id]["is_running"] = is_running
+            self.simulation_states[client_id]["is_paused"] = is_paused
+            print(f"[MONITOR] Simulation state for '{client_id}': running={is_running}, paused={is_paused}")
+    
+    def get_simulation_state(self, client_id):
+        """Get simulation state for a specific client"""
+        if client_id in self.simulation_states:
+            return self.simulation_states[client_id]
+        return {"is_running": False, "is_paused": False}
+    
+    def get_active_clients(self):
+        """Get all clients with running simulations"""
+        return [
+            client_id for client_id, state in self.simulation_states.items()
+            if state.get("is_running", False) and not state.get("is_paused", False)
+        ]
+        
+    def get_changes(self):
+        return self.change_log
 
 MQTT_BROKER = "localhost"
 MQTT_TOPIC = "sensor/temperature"
@@ -30,7 +93,7 @@ app.add_middleware(
 static_dir = os.path.join(os.path.dirname(__file__), "static")
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
-simulators = {}
+simulators = MonitoredDict()
 
 def on_connect(client, userdata, flags, rc):
     print(f"Connected to MQTT Broker with result code: {rc}")
@@ -42,24 +105,29 @@ def generate_temperature(client_id=None):
     """Simulates temperature sensor data using HVAC simulator."""
     if client_id and client_id in simulators:
         simulator = simulators[client_id]
+        new_temp = simulator.calculate_temperature_change()
+        simulator.room.current_temp = new_temp
+        return round(new_temp, 2)
+    else:
+        print(f"Warning: No simulator found for client_id: {client_id}")
+        return 25.0  # Default temperature
 
-    new_temp = simulator.calculate_temperature_change()
-    simulator.room.current_temp = new_temp
-    return round(new_temp, 2)
-
-# Global variables to track simulation state
-is_simulation_running = False
-is_simulation_paused = False
+# # Global variables to track simulation state
+# is_simulation_running = False
+# is_simulation_paused = False
 
 async def publish_temperature():
     """Publishes temperature and system status data to MQTT and WebSocket clients."""
-    global is_simulation_running
     while True:
-        if is_simulation_running and not is_simulation_paused:
-            for client_id, simulator in simulators.items():
+        # Get all actively running client simulations
+        active_clients = simulators.get_active_clients()
+        
+        for client_id in active_clients:
+            if client_id in simulators:
+                simulator = simulators[client_id]
                 temp = generate_temperature(client_id)
                 system_status = simulator.get_system_status()
-            
+
                 # Prepare message with client id, temperature and system status
                 message = {
                     "client_id": client_id,
@@ -77,7 +145,6 @@ async def publish_temperature():
                         # Check if this websocket is associated with this client_id
                         if hasattr(ws, 'client_id') and ws.client_id == client_id:
                             await ws.send_text(json.dumps(message))
-
                     except:
                         disconnected.add(ws)
             
@@ -91,12 +158,10 @@ async def root():
     return FileResponse(os.path.join(static_dir, "index.html"))
 
 @app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket, system_type: str, client_id: Optional[str] = None):
+async def websocket_endpoint(websocket: WebSocket, system_type: str):
     await websocket.accept()
     
-    # Generate a client ID if none provided
-    if not client_id:
-        client_id = f"client_{id(websocket)}"
+    client_id = system_type
     
     # Store client_id with the websocket
     websocket.client_id = client_id
@@ -107,25 +172,33 @@ async def websocket_endpoint(websocket: WebSocket, system_type: str, client_id: 
         room_params = {
             'length': 5.0,
             'breadth': 4.0,
-            'height': 2.5,
+            'height': 3.0,
             'current_temp': 25.0,
             'target_temp': 22.0,
             'external_temp': 35.0,
             'wall_insulation': 'medium',
             'num_people': 0,
             'mode': 'cooling',
+            'fanCoilUnits': 1,
         }
         
         hvac_params = {
             'power': 3.5,
             'air_flow_rate': 0.5,
-            'fan_speed': 100.0,
+            'fan_speed': 50.0,
+            'chilledWaterFlowRate': 0.5,
+            'chilledWaterSupplyTemp': 7.0,
+            'chilledWaterReturnTemp': 12.0,
+            'pumpPower': 0.75,
+            'primarySecondaryLoop': True,
+            'glycolPercentage': 0,
+            'heatExchangerEfficiency': 0.85,
         }
-        
+
         simulators[client_id] = SimulatorFactory.create_simulator(system_type, room_params, hvac_params)
-    
+
     websockets.add(websocket)
-    
+
     try:
         while True:
             try:
@@ -137,29 +210,36 @@ async def websocket_endpoint(websocket: WebSocket, system_type: str, client_id: 
                 simulator = simulators.get(client_id)
 
                 if data.get('type') == 'simulation_control':
-                    global is_simulation_running, is_simulation_paused
                     action = data.get('data', {}).get('action')
+                    # Get current simulation state
+                    sim_state = simulators.get_simulation_state(client_id)
+                    is_running = sim_state["is_running"]
+                    is_paused = sim_state["is_paused"]
+                    
                     if action == 'start':
-                        is_simulation_running = True
-                        is_simulation_paused = False
+                        is_running = True
+                        is_paused = False
                         print(f"Simulation started for {client_id}")
                     elif action == 'stop':
-                        is_simulation_running = False
-                        is_simulation_paused = False
+                        is_running = False
+                        is_paused = False
                         print(f"Simulation stopped for {client_id}")
                     elif action == 'pause':
-                        is_simulation_paused = True
+                        is_paused = True
                         print(f"Simulation paused for {client_id}")
                     elif action == 'resume':
-                        is_simulation_paused = False
+                        is_paused = False
                         print(f"Simulation resumed for {client_id}")
+                    
+                    # Update simulation state
+                    simulators.set_simulation_state(client_id, is_running, is_paused)
                     
                     # Send simulation status to client
                     await websocket.send_text(json.dumps({
                         'type': 'simulation_status',
                         'data': {
-                            'isRunning': is_simulation_running,
-                            'isPaused': is_simulation_paused,
+                            'isRunning': is_running,
+                            'isPaused': is_paused,
                             'estimatedTimeToTarget': simulator.calculate_time_to_target()
                         }
                     }))
@@ -225,6 +305,52 @@ async def websocket_endpoint(websocket: WebSocket, system_type: str, client_id: 
                     
                     print(f"Updated HVAC parameters for {client_id}")
 
+                elif data.get('type') == 'get_status':
+                    # Send immediate status update
+                    system_status = simulator.get_system_status()
+
+                    # Include time estimate if requested
+                    time_to_target = None
+                    if data.get('include_time_estimate', False):
+                        time_to_target = simulator.calculate_time_to_target()
+    
+                    response_data = {
+                        'client_id': client_id,
+                        'system_status': system_status
+                    }
+    
+                    # Add simulation status with time estimate if available
+                    if time_to_target is not None:
+                        response_data['type'] = 'simulation_status'
+                        response_data['data'] = {
+                            'isRunning': simulators.get_simulation_state(client_id)["is_running"],
+                            'isPaused': simulators.get_simulation_state(client_id)["is_paused"],
+                            'estimatedTimeToTarget': time_to_target
+                        }
+    
+                    await websocket.send_text(json.dumps(response_data))
+                
+                # In the section where you handle get_time_to_target
+                elif data.get('type') == 'get_time_to_target':
+                    time_to_target = simulator.calculate_time_to_target()
+                    can_reach_target = simulator.can_reach_target()
+
+                    # Handle float('inf') by converting to string before JSON encoding
+                    if isinstance(time_to_target, float) and math.isinf(time_to_target):
+                        estimated_time = "Cannot reach target"
+                    else:
+                        estimated_time = time_to_target
+
+                    await websocket.send_text(json.dumps({
+                        'type': 'simulation_status',
+                        'data': {
+                            'isRunning': simulators.get_simulation_state(client_id)["is_running"],
+                            'isPaused': simulators.get_simulation_state(client_id)["is_paused"],
+                            'estimatedTimeToTarget': estimated_time,
+                            'canReachTarget': can_reach_target
+                        }
+                    }))
+
                 # Send immediate feedback
                 system_status = simulator.get_system_status()
                 await websocket.send_text(json.dumps({
@@ -268,10 +394,15 @@ async def calculate_hvac(system_type: str, params: Dict = Body(...), client_id: 
     simulator.hvac.power = float(params.get('power', 3.5))
     simulator.hvac.cop = float(params.get('cop', 3.0))
     simulator.hvac.air_flow_rate = float(params.get('airFlowRate', 0.5))
+    simulator.hvac.fan_speed = float(params.get('fanSpeed', 50.0))
     simulator.hvac.supply_temp = float(params.get('supplyTemp', 12.0))
     
     # Handle chilled-water-system specific parameters
     if system_type == "chilled-water-system":
+        if 'chilledWaterFlowRate' in params:
+            simulator.hvac.chilled_water_flow_rate = float(params['chilledWaterFlowRate'])
+        if 'waterFlowRate' in params:  # Add this as an alternative name
+            simulator.hvac.chilled_water_flow_rate = float(params['waterFlowRate'])
         simulator.room.fan_coil_units = int(params.get('fanCoilUnits', 1))
         simulator.hvac.chilled_water_flow_rate = float(params.get('chilledWaterFlowRate', 0.5))
         simulator.hvac.chilled_water_supply_temp = float(params.get('chilledWaterSupplyTemp', 7.0))
@@ -297,3 +428,6 @@ async def shutdown_event():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
+
+print("Simulators: ", simulators)

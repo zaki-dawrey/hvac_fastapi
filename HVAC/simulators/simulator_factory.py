@@ -1,8 +1,8 @@
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 from .split_system_simulator import SplitSystemSimulator, SplitRoomParameters, SplitHVACParameters
 from .vrf_system_simulator import VRFSystemSimulator, VRFRoomParameters, VRFHVACParameters
 from .heat_pump_system_simulator import HeatPumpSystemSimulator, HeatPumpRoomParameters, HeatPumpHVACParameters
-from .chilled_water_system_simulator import ChilledWaterSystemSimulator, ChilledWaterHVACParameters, ChilledWaterRoomParameters
+from .chilled_water_system_simulator import ChilledWaterSystemSimulator, ChilledWaterRoomParameters, ChilledWaterHVACParameters
 
 class SimulatorFactory:
     @staticmethod
@@ -58,7 +58,7 @@ class SimulatorFactory:
                 supply_temp=float(hvac_params.get('supply_temp', 12.0)),
                 fan_speed=float(hvac_params.get('fan_speed', 100.0)),
                 time_interval=float(hvac_params.get('time_interval', 1.0)),
-                chilled_water_flow_rate=float(hvac_params.get('chilled_water_flow_rate', 0.5)),
+                chilled_water_flow_rate=float(hvac_params.get('waterFlowRate', 0.5)),
                 chilled_water_supply_temp=float(hvac_params.get('chilled_water_supply_temp', 7.0)),
                 chilled_water_return_temp=float(hvac_params.get('chilled_water_return_temp', 12.0)),
                 pump_power=float(hvac_params.get('pump_power', 0.75)),
