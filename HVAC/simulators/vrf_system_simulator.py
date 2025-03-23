@@ -18,12 +18,16 @@ class VRFRoomParameters:
 
 @dataclass
 class VRFHVACParameters:
-    power: float  # kW
+    max_capacity_kw: float = 14.0  # Maximum system capacity in kW (default 14kW)
+    min_capacity_kw: float = 3.0   # Minimum system capacity in kW (default 3kW)
     cop: float = 3.0  # Coefficient of Performance
+    zones: Dict[str, float] = None  # Dictionary of zone names and their loads in kW
+    heat_recovery: bool = False  # Whether system has heat recovery capability
     air_flow_rate: float = 0.5  # m³/s
     supply_temp: float = 12.0  # °C
     fan_speed: float = 100.0  # Fan speed percentage
     time_interval: float = 1.0  # Simulation update interval in seconds
+    power: float = None  # Rated power consumption in kW
 
 class VRFSystemSimulator:
     def __init__(self, room: VRFRoomParameters, hvac: VRFHVACParameters):
@@ -32,6 +36,7 @@ class VRFSystemSimulator:
         self.specific_heat_air = 1.005  # kJ/kg·K
         self.air_density = 1.225  # kg/m³
         self.debug_info = []  # To store debug information during calculations
+        self.total_demand = sum(hvac.zones.values()) if hvac.zones else 0
 
     @property
     def room_volume(self) -> float:
@@ -44,25 +49,26 @@ class VRFSystemSimulator:
         return self.room_volume * self.air_density
 
     def calculate_cooling_capacity(self, at_temp=None) -> float:
-        """Calculate cooling capacity in Watts with improved logic."""
+        """Calculate cooling capacity in Watts with VRF system logic."""
         temp = at_temp if at_temp is not None else self.room.current_temp
         
-        # Calculate theoretical maximum capacity based on rated power
-        rated_capacity = self.hvac.power * 1000  # Convert kW to Watts
+        # Calculate maximum available capacity based on temperature
+        max_capacity = self.hvac.max_capacity_kw * 1000  # Convert to Watts
+        min_capacity = self.hvac.min_capacity_kw * 1000  # Convert to Watts
         
-        # Calculate capacity based on air flow and temperature differential
-        airflow_capacity = (
-            self.hvac.air_flow_rate
-            * self.specific_heat_air
-            * 1000  # Convert to Watts
-            * abs(temp - self.hvac.supply_temp)
-        )
+        # Calculate required capacity based on load
+        required_capacity = self.total_demand * 1000  # Convert kW to Watts
         
-        # Take the lesser of the two capacities (limiting factor)
-        # Adjust for fan speed and apply COP for actual cooling/heating effect
-        effective_capacity = min(rated_capacity, airflow_capacity) * (self.hvac.fan_speed / 100.0)
+        # Consider heat recovery if enabled
+        if self.hvac.heat_recovery and self.room.mode.lower() == "cooling":
+            recovered_heat = self.total_demand * 0.3 * 1000  # Assume 30% heat recovery
+            required_capacity -= recovered_heat
         
-        return effective_capacity
+        # Ensure capacity is within system limits
+        effective_capacity = max(min_capacity, min(required_capacity, max_capacity))
+        
+        # Adjust for fan speed
+        return effective_capacity * (self.hvac.fan_speed / 100.0)
 
     def calculate_heat_gain(self, at_temp=None) -> float:
         """Calculate total heat gain in Watts."""
@@ -281,5 +287,5 @@ class VRFSystemSimulator:
             "time_to_target": time_to_target if time_to_target != float('inf') else "Cannot reach target",
             "can_reach_target": self.can_reach_target(),
             "temp_change_rate": round(self.calculate_temp_change_rate(self.room.current_temp) * 3600, 4),  # °C/hour
-            "rated_power_kw": self.hvac.power
+            "rated_power_kw": self.hvac.max_capacity_kw  # Changed from power to max_capacity_kw
         }
