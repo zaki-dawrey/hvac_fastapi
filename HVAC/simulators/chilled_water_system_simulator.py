@@ -2,6 +2,7 @@ import math
 from dataclasses import dataclass
 from typing import Dict, Any, Tuple, List
 
+
 @dataclass
 class ChilledWaterRoomParameters:
     length: float  # meters
@@ -13,9 +14,11 @@ class ChilledWaterRoomParameters:
     wall_insulation: str = "medium"  # Insulation level (low/medium/high)
     humidity: float = 50.0  # Target humidity (%)
     num_people: int = 0  # Number of people in room
-    heat_gain_external: float = 0.0  # External heat gain in Watts (sunlight, appliances)
+    # External heat gain in Watts (sunlight, appliances)
+    heat_gain_external: float = 0.0
     mode: str = "cooling"  # cooling/heating mode
     fan_coil_units: int = 1  # Number of fan coil units in the room
+
 
 @dataclass
 class ChilledWaterHVACParameters:
@@ -25,15 +28,18 @@ class ChilledWaterHVACParameters:
     supply_temp: float = 12.0  # °C - Air supply temperature
     fan_speed: float = 100.0  # Fan speed percentage
     time_interval: float = 1.0  # Simulation update interval in seconds
-    
+
     # Chilled water system specific parameters
     chilled_water_flow_rate: float = 0.5  # L/s
     chilled_water_supply_temp: float = 7.0  # °C
     chilled_water_return_temp: float = 12.0  # °C
     pump_power: float = 0.75  # kW
-    primary_secondary_loop: bool = True  # True if using primary/secondary loop configuration
+    # True if using primary/secondary loop configuration
+    primary_secondary_loop: bool = True
     glycol_percentage: float = 0  # Percentage of glycol in water (0-100)
-    heat_exchanger_efficiency: float = 0.85  # Water-to-air heat exchanger efficiency
+    # Water-to-air heat exchanger efficiency
+    heat_exchanger_efficiency: float = 0.85
+
 
 class ChilledWaterSystemSimulator:
     def __init__(self, room: ChilledWaterRoomParameters, hvac: ChilledWaterHVACParameters):
@@ -42,29 +48,29 @@ class ChilledWaterSystemSimulator:
         self.specific_heat_air = 1.005  # kJ/kg·K
         self.air_density = 1.225  # kg/m³
         self.debug_info = []  # To store debug information during calculations
-        
+
         # Chilled water properties
         self.specific_heat_water = 4.18  # kJ/kg·K
         self.water_density = 1000  # kg/m³
         self.initialize_water_properties()
-        
+
         # Fan power parameters
         self.fan_power_factor = 0.06  # kW per m³/s of air flow at full speed
-    
+
     def initialize_water_properties(self):
         """Initialize water properties based on glycol percentage."""
         # Adjust specific heat and density based on glycol percentage
         if self.hvac.glycol_percentage > 0:
             # More accurate correction factors for glycol-water mixture
             glycol_factor = self.hvac.glycol_percentage / 100
-            
+
             # Specific heat decreases with glycol concentration
             # More accurate formula based on glycol concentration
             self.specific_heat_water = 4.18 * (1 - glycol_factor * 0.6)
-            
+
             # Density increases with glycol concentration
             self.water_density = 1000 * (1 + glycol_factor * 0.15)
-            
+
             # Adjust COP if glycol is used (glycol reduces efficiency)
             if self.hvac.glycol_percentage > 20:
                 self.hvac.cop *= 0.95  # 5% penalty for high glycol concentration
@@ -82,10 +88,10 @@ class ChilledWaterSystemSimulator:
     def calculate_cooling_capacity(self, at_temp=None) -> float:
         """Calculate cooling capacity in Watts with improved chilled water system logic."""
         temp = at_temp if at_temp is not None else self.room.current_temp
-        
+
         # Calculate theoretical maximum capacity based on rated power
         rated_capacity = self.hvac.power * 1000  # Convert kW to Watts
-        
+
         # Calculate capacity based on air-side heat transfer
         # Q = m * cp * ΔT (mass flow rate * specific heat * temperature difference)
         air_mass_flow = self.hvac.air_flow_rate * self.air_density
@@ -95,87 +101,95 @@ class ChilledWaterSystemSimulator:
             * 1000  # Convert to Watts
             * abs(temp - self.hvac.supply_temp)
         )
-        
+
         # Calculate capacity based on water-side heat transfer
         water_capacity = self.calculate_water_heat_capacity()
-        
+
         # Log capacities for debugging
         self.debug_info.append({
             "rated_capacity": rated_capacity,
             "airflow_capacity": airflow_capacity,
             "water_capacity": water_capacity
         })
-        
+
         # For chilled water systems, consider both coil and water limitations
         # Water capacity is already adjusted for flow rate and temperatures
         heat_exchanger_efficiency = self.hvac.heat_exchanger_efficiency
-        
+
         # Calculate the actual capacity based on the limiting factor
         if self.hvac.primary_secondary_loop:
             # With primary/secondary loop, water capacity is decoupled from coil capacity
             coil_capacity = min(rated_capacity, airflow_capacity)
-            effective_capacity = min(coil_capacity, water_capacity * heat_exchanger_efficiency)
+            effective_capacity = min(
+                coil_capacity, water_capacity * heat_exchanger_efficiency)
         else:
             # With direct loop, water capacity directly limits the coil capacity
-            effective_capacity = min(rated_capacity, airflow_capacity, water_capacity * heat_exchanger_efficiency)
-        
+            effective_capacity = min(
+                rated_capacity, airflow_capacity, water_capacity * heat_exchanger_efficiency)
+
         # Scale by fan speed for the air-side delivery
         # Cubic relationship between fan speed and capacity (airflow is roughly cubic with fan speed)
         fan_factor = (self.hvac.fan_speed / 100.0) ** 0.67
         effective_capacity = effective_capacity * fan_factor
-        
+
         # Scale by number of fan coil units
         effective_capacity = effective_capacity * self.room.fan_coil_units
-        
+
         # In heating mode, reverse the sign of the capacity
         if self.room.mode.lower() == "heating":
             # In heating mode, we're using hot water instead of chilled water
             # Typically heating capacity is higher than cooling capacity for same system
-            effective_capacity = effective_capacity * 1.2  # Heating is typically 20% more efficient
-        
+            # Heating is typically 20% more efficient
+            effective_capacity = effective_capacity * 1.2
+
         return effective_capacity
 
     def calculate_heat_gain(self, at_temp=None) -> float:
         """Calculate total heat gain in Watts with improved thermal calculations."""
         temp = at_temp if at_temp is not None else self.room.current_temp
-        
+
         # Calculate wall area and floor/ceiling area separately
-        wall_area = 2 * (self.room.length * self.room.height + self.room.breadth * self.room.height)
+        wall_area = 2 * (self.room.length * self.room.height +
+                         self.room.breadth * self.room.height)
         floor_ceiling_area = 2 * (self.room.length * self.room.breadth)
-        
+
         # Get insulation factor based on level - more accurate values
         insulation_factors = {
             "low": 1.2,     # U-value of ~1.2 W/m²K
             "medium": 0.6,  # U-value of ~0.6 W/m²K
             "high": 0.3     # U-value of ~0.3 W/m²K
         }
-        
+
         if isinstance(self.room.wall_insulation, str):
-            insulation_factor = insulation_factors.get(self.room.wall_insulation.lower(), 0.6)
+            insulation_factor = insulation_factors.get(
+                self.room.wall_insulation.lower(), 0.6)
         else:
             insulation_factor = 0.6  # Default insulation factor if invalid
-        
+
         # Different insulation properties for floor/ceiling
         floor_ceiling_factor = insulation_factor * 0.8  # Typically better insulated
-        
+
         # Calculate environmental heat gain
         temperature_difference = self.room.external_temp - temp
         wall_heat_gain = wall_area * insulation_factor * temperature_difference
-        floor_ceiling_heat_gain = floor_ceiling_area * floor_ceiling_factor * temperature_difference
+        floor_ceiling_heat_gain = floor_ceiling_area * \
+            floor_ceiling_factor * temperature_difference
         environmental_gain = wall_heat_gain + floor_ceiling_heat_gain
-        
+
         # Add heat from people (approximately 115W per person at rest)
         people_heat = self.room.num_people * 115
-        
+
         # Add external heat gain (from sunlight, appliances, etc)
-        total_heat_gain = environmental_gain + people_heat + self.room.heat_gain_external
-        
+        total_heat_gain = environmental_gain + \
+            people_heat + self.room.heat_gain_external
+
         return total_heat_gain
 
     def calculate_energy_consumption(self, cooling_capacity: float) -> float:
         """Calculate energy consumption in Watts with improved modeling and hard limits."""
         # Account for part-load efficiency
-        part_load_factor = min(1.0, abs(cooling_capacity) / (self.hvac.power * 1000))
+        part_load_factor = min(
+            1.0, abs(cooling_capacity) / (self.hvac.power * 1000))
 
         # At part load, COP is often better than at full load
         adjusted_cop = self.hvac.cop * (1 + 0.1 * (1 - part_load_factor))
@@ -183,7 +197,8 @@ class ChilledWaterSystemSimulator:
         # Chiller energy consumption (based on cooling capacity and COP)
         # Limit the maximum cooling capacity that a chiller can handle
         max_chiller_capacity = 20000  # 20kW for a typical small commercial chiller
-        limited_cooling_capacity = min(abs(cooling_capacity), max_chiller_capacity)
+        limited_cooling_capacity = min(
+            abs(cooling_capacity), max_chiller_capacity)
         chiller_energy = limited_cooling_capacity / adjusted_cop
 
         # Calculate pump energy with more realistic constraints
@@ -205,7 +220,7 @@ class ChilledWaterSystemSimulator:
         total_energy = chiller_energy + pump_energy + fan_energy
 
         # Implement a hard cap on total energy based on equipment size
-        # For a typical small commercial chiller system, it would be unrealistic 
+        # For a typical small commercial chiller system, it would be unrealistic
         # to exceed about 5x the rated power
         absolute_max_energy = self.hvac.power * 1000 * 5
         if total_energy > absolute_max_energy:
@@ -218,7 +233,7 @@ class ChilledWaterSystemSimulator:
         # Store components for debugging
         self.debug_info.append({
             "chiller_energy": chiller_energy,
-            "pump_energy": pump_energy, 
+            "pump_energy": pump_energy,
             "fan_energy": fan_energy,
             "adjusted_cop": adjusted_cop,
             "part_load_factor": part_load_factor,
@@ -230,36 +245,38 @@ class ChilledWaterSystemSimulator:
     def calculate_fan_energy(self) -> float:
         """Calculate fan energy consumption based on fan laws."""
         # Fan power is proportional to the cube of speed
-        baseline_fan_power = self.fan_power_factor * self.hvac.air_flow_rate * 1000  # Convert to Watts
+        baseline_fan_power = self.fan_power_factor * \
+            self.hvac.air_flow_rate * 1000  # Convert to Watts
         fan_power = baseline_fan_power * (self.hvac.fan_speed / 100.0) ** 3
-        
+
         # Multiply by number of fan coil units
         fan_power *= self.room.fan_coil_units
-        
+
         return fan_power
 
     def calculate_refrigerant_flow(self, cooling_capacity: float) -> float:
         """Calculate refrigerant flow rate in g/s based on refrigerant properties."""
         # This is only relevant for the chiller's refrigeration cycle
         # Not directly used in the room-level chilled water calculations
-        
+
         # R-410A properties at typical evaporating/condensing temperatures
         # Latent heat of vaporization depends on operating conditions
         evaporating_temp = 5.0  # °C (typical for chilled water system)
         condensing_temp = 45.0  # °C (typical for air-cooled condenser)
-        
+
         # Enthalpy difference varies with temperatures
         enthalpy_difference = 170  # kJ/kg (more accurate for R-410A)
-        
+
         # Calculate mass flow rate
-        return (cooling_capacity / 1000) / enthalpy_difference * 1000  # Convert to g/s
+        # Convert to g/s
+        return (cooling_capacity / 1000) / enthalpy_difference * 1000
 
     def calculate_net_heat_at_temp(self, temp: float) -> float:
         """Calculate net heat transfer (in Watts) at a specific temperature."""
         # Calculate components at specified temperature
         cooling_capacity = self.calculate_cooling_capacity(at_temp=temp)
         heat_gain = self.calculate_heat_gain(at_temp=temp)
-        
+
         # Calculate net heat based on mode
         if self.room.mode.lower() == "heating":
             # In heating mode, cooling_capacity is actually heating capacity (positive)
@@ -267,16 +284,16 @@ class ChilledWaterSystemSimulator:
         else:  # cooling mode
             # In cooling mode, cooling_capacity is negative (removing heat)
             net_heat = heat_gain - cooling_capacity
-        
+
         return net_heat
-    
+
     def calculate_temp_change_rate(self, temp: float) -> float:
         """Calculate rate of temperature change (°C/s) at a specific temperature."""
         net_heat = self.calculate_net_heat_at_temp(temp)
-        
+
         # Temperature change rate = net heat / (mass * specific heat)
         rate = net_heat / (self.room_air_mass * self.specific_heat_air * 1000)
-        
+
         return rate
 
     def calculate_temperature_change(self) -> float:
@@ -287,19 +304,19 @@ class ChilledWaterSystemSimulator:
 
         # Get temperature change rate
         rate = self.calculate_temp_change_rate(self.room.current_temp)
-        
+
         # Apply time interval to get temperature change
         temp_change = rate * self.hvac.time_interval
-        
+
         # Calculate new temperature
         new_temp = self.room.current_temp + temp_change
-        
+
         # Check if we're approaching or moving away from target
         approaching_target = (
             (self.room.mode.lower() == "cooling" and new_temp < self.room.current_temp) or
             (self.room.mode.lower() == "heating" and new_temp > self.room.current_temp)
         )
-        
+
         # Handle approaching target to prevent oscillation
         if approaching_target:
             # Prevent overshooting target temperature
@@ -328,7 +345,7 @@ class ChilledWaterSystemSimulator:
         # Check if we're moving in the right direction with significant speed
         if (cooling_needed and current_rate < -1e-6) or (heating_needed and current_rate > 1e-6):
             return True
-    
+
         return False
 
     def calculate_time_to_target(self) -> float:
@@ -336,120 +353,129 @@ class ChilledWaterSystemSimulator:
         # If already at target, return 0
         if abs(self.room.current_temp - self.room.target_temp) < 0.1:
             return 0.0
-            
+
         # Check if target can be reached
         if not self.can_reach_target():
             return float('inf')
-            
+
         # Setup for numerical integration
         start_temp = self.room.current_temp
         target_temp = self.room.target_temp
         cooling_mode = self.room.mode.lower() == "cooling"
-        
+
         # Determine direction of approach
-        proper_direction = (cooling_mode and start_temp > target_temp) or (not cooling_mode and start_temp < target_temp)
+        proper_direction = (cooling_mode and start_temp > target_temp) or (
+            not cooling_mode and start_temp < target_temp)
         if not proper_direction:
-            return float('inf')  # Can't reach target if going in wrong direction
-        
+            # Can't reach target if going in wrong direction
+            return float('inf')
+
         # Clear debug info
         self.debug_info = []
-        
+
         # Track current progress
         current_temp = start_temp
         total_time = 0.0
-        
+
         # Use adaptive time step for more accurate integration
         # Start with a small time step and increase as we get closer to equilibrium
         min_time_step = 15.0  # 15 seconds minimum
         max_time_step = 300.0  # 5 minutes maximum
         max_time = 24 * 3600  # 24 hours max simulation
-        
+
         while total_time < max_time:
             # Calculate rate at current temperature
             rate = self.calculate_temp_change_rate(current_temp)
-            
+
             # Check if we can still make progress
             if (cooling_mode and rate >= 0) or (not cooling_mode and rate <= 0):
                 return float('inf')  # Can't reach target
-            
+
             # Adaptive time step based on rate of change
             # Faster changes = smaller time step
-            time_step = min(max(min_time_step, 60.0 / abs(rate)), max_time_step)
-                
+            time_step = min(
+                max(min_time_step, 60.0 / abs(rate)), max_time_step)
+
             # Calculate temperature change for this time step
             temp_change = rate * time_step
             new_temp = current_temp + temp_change
-            
+
             # Check if we've reached or passed the target
             if (cooling_mode and new_temp <= target_temp) or (not cooling_mode and new_temp >= target_temp):
                 # Interpolate exact time to reach target
                 if abs(rate) < 1e-6:
                     return float('inf')  # Prevent division by zero
-                    
+
                 remaining_temp_diff = abs(target_temp - current_temp)
                 remaining_time = remaining_temp_diff / abs(rate)
-                
+
                 return round(total_time + remaining_time, 2)
-                
+
             # Update for next iteration
             current_temp = new_temp
             total_time += time_step
-            
+
             # Store debug info periodically
             if int(total_time) % 300 == 0:  # Every 5 minutes
                 self.debug_info.append({
-                    "temp": round(current_temp, 2), 
+                    "temp": round(current_temp, 2),
                     "rate": round(rate * 3600, 4),  # °C/hour
                     "time_elapsed": round(total_time / 60, 1)  # minutes
                 })
-        
+
         # If we get here, we couldn't reach target within max simulation time
         return float('inf')
 
     def calculate_water_heat_capacity(self) -> float:
         """Calculate heat transfer capacity of the chilled water in Watts."""
         # Convert L/s to kg/s
-        mass_flow_rate = self.hvac.chilled_water_flow_rate * (self.water_density / 1000)
-        
+        mass_flow_rate = self.hvac.chilled_water_flow_rate * \
+            (self.water_density / 1000)
+
         # Calculate capacity using Q = ṁ × cp × ΔT
-        delta_t = abs(self.hvac.chilled_water_return_temp - self.hvac.chilled_water_supply_temp)
-        
+        delta_t = abs(self.hvac.chilled_water_return_temp -
+                      self.hvac.chilled_water_supply_temp)
+
         # Adjust for mode (heating vs cooling)
         if self.room.mode.lower() == "heating":
             # For heating, supply temp is higher than return temp
             if self.hvac.chilled_water_supply_temp <= self.hvac.chilled_water_return_temp:
                 # Correct the temperatures for heating mode
                 delta_t = 30  # Typical hot water delta T
-        
-        capacity = mass_flow_rate * self.specific_heat_water * delta_t * 1000  # Convert to Watts
-        
+
+        capacity = mass_flow_rate * self.specific_heat_water * \
+            delta_t * 1000  # Convert to Watts
+
         return capacity
-    
+
     def calculate_pump_energy(self) -> float:
         """Calculate energy consumption of the chilled water pump in Watts with more realistic scaling."""
         # Base consumption on rated pump power
         base_consumption = self.hvac.pump_power * 1000  # Convert to Watts
 
         # Flow Rate vs Flow Rate Reference (usually design flow)
-        relative_flow = self.hvac.chilled_water_flow_rate / 0.5  # Normalized to default flow
+        relative_flow = self.hvac.chilled_water_flow_rate / \
+            0.5  # Normalized to default flow
 
         # Advanced pump curve modeling:
         # In real VFD pumps, the power curve is flatter than cubic law suggests
         # We use a more realistic formula: P = P_design * (a * (Q/Q_design) + b * (Q/Q_design)² + c * (Q/Q_design)³)
         # Where a + b + c = 1 and the values are chosen to match real pump curves
 
-        a = 0.15  # Fixed power component (even at zero flow, there's some power consumption)
-        b = 0.35  # Linear component 
+        # Fixed power component (even at zero flow, there's some power consumption)
+        a = 0.15
+        b = 0.35  # Linear component
         c = 0.50  # Cubic component
 
         # More realistic pump curve
         pump_energy = base_consumption * (
-            a + 
-            b * relative_flow + 
-            c * (relative_flow**2)  # Changed from cubic to quadratic for more realistic behavior
+            a +
+            b * relative_flow +
+            # Changed from cubic to quadratic for more realistic behavior
+            c * (relative_flow**2)
         )
 
-        # Apply practical minimum power draw 
+        # Apply practical minimum power draw
         min_power = base_consumption * 0.2
         pump_energy = max(min_power, pump_energy)
 
@@ -461,7 +487,8 @@ class ChilledWaterSystemSimulator:
         # Additional efficiency losses from flow restrictions at very high flow rates
         if relative_flow > 3.0:
             # At very high flow rates, efficiency drops dramatically
-            efficiency_factor = 1.0 - min(0.5, (relative_flow - 3.0) * 0.1)  # Efficiency drops by 10% per unit above 3x flow
+            # Efficiency drops by 10% per unit above 3x flow
+            efficiency_factor = 1.0 - min(0.5, (relative_flow - 3.0) * 0.1)
             pump_energy = pump_energy / efficiency_factor  # Higher number = more energy used
 
         # Adjust for primary/secondary loop configuration
@@ -474,13 +501,14 @@ class ChilledWaterSystemSimulator:
     def get_system_status(self) -> Dict[str, Any]:
         """Get current system status and calculations for chilled water system."""
         cooling_capacity = self.calculate_cooling_capacity()
-        energy_consumption = self.calculate_energy_consumption(cooling_capacity)
+        energy_consumption = self.calculate_energy_consumption(
+            cooling_capacity)
         water_capacity = self.calculate_water_heat_capacity()
         pump_energy = self.calculate_pump_energy()
         fan_energy = self.calculate_fan_energy()
         time_to_target = self.calculate_time_to_target()
         refrigerant_flow = self.calculate_refrigerant_flow(cooling_capacity)
-        
+
         chiller_energy = energy_consumption - pump_energy - fan_energy
 
         energy_components = {
@@ -494,13 +522,15 @@ class ChilledWaterSystemSimulator:
         absolute_maximum = 75000  # 75kW is reasonable max for small commercial systems
         if energy_consumption > absolute_maximum:
             scaling_factor = absolute_maximum / energy_consumption
-            energy_components = {k: v * scaling_factor for k, v in energy_components.items()}
+            energy_components = {
+                k: v * scaling_factor for k, v in energy_components.items()}
             energy_consumption = absolute_maximum
 
         # Calculate actual water flow rate based on current load
         # In a real system, water flow varies with load to maintain delta T
-        load_factor = min(1.0, abs(cooling_capacity) / (self.hvac.power * 1000))
-    
+        load_factor = min(1.0, abs(cooling_capacity) /
+                          (self.hvac.power * 1000))
+
         # Modulate water flow based on load with a minimum flow rate
         # This simulates the variable flow in the secondary loop
         min_flow_rate = 0.1 if self.hvac.chilled_water_flow_rate > 0.1 else 0.05
@@ -508,14 +538,15 @@ class ChilledWaterSystemSimulator:
             min_flow_rate,
             self.hvac.chilled_water_flow_rate * (0.3 + 0.7 * load_factor)
         )
-    
+
         # If the system is running, use calculated flow; otherwise use the parameter value
         # This ensures flow displays as 0 when system is off
         display_flow_rate = actual_flow_rate if cooling_capacity != 0 else 0
 
         # Calculate actual COP of the system
-        system_cop = abs(cooling_capacity) / energy_consumption if energy_consumption > 0 else 0
-        
+        system_cop = abs(cooling_capacity) / \
+            energy_consumption if energy_consumption > 0 else 0
+
         status = {
             "room_temperature": round(self.room.current_temp, 2),
             "target_temperature": self.room.target_temp,
@@ -546,13 +577,14 @@ class ChilledWaterSystemSimulator:
             "external_temperature": self.room.external_temp,
             "time_to_target": time_to_target if time_to_target != float('inf') else "Cannot reach target",
             "can_reach_target": self.can_reach_target(),
-            "temp_change_rate_per_hour": round(self.calculate_temp_change_rate(self.room.current_temp) * 3600, 4),  # °C/hour
+            # °C/hour
+            "temp_change_rate_per_hour": round(self.calculate_temp_change_rate(self.room.current_temp) * 3600, 4),
             "rated_power_kw": self.hvac.power,
             "primary_secondary_loop": self.hvac.primary_secondary_loop,
             "heat_exchanger_efficiency": self.hvac.heat_exchanger_efficiency,
             "refrigerant_flow_gs": round(refrigerant_flow, 2),
         }
-        
+
         return status
 
     def simulate_until_target(self, max_time_seconds=7200) -> Dict[str, Any]:
@@ -560,37 +592,38 @@ class ChilledWaterSystemSimulator:
         # Save original state to restore later
         original_temp = self.room.current_temp
         original_time_interval = self.hvac.time_interval
-        
+
         # Use a reasonable time interval for simulation
         self.hvac.time_interval = 60  # 1 minute per step
-        
+
         # Initialize simulation data
         current_time = 0
         temperature_history = [(0, self.room.current_temp)]
         energy_consumption = 0
-        
+
         while current_time < max_time_seconds:
             # Calculate current status
             status = self.get_system_status()
-            
+
             # Check if we've reached target
             if abs(self.room.current_temp - self.room.target_temp) < 0.1:
                 break
-                
+
             # Update room temperature
             self.room.current_temp = self.calculate_temperature_change()
-            
+
             # Track energy consumption
-            energy_consumption += status["energy_consumption_w"] * self.hvac.time_interval / 3600  # Wh
-            
+            energy_consumption += status["energy_consumption_w"] * \
+                self.hvac.time_interval / 3600  # Wh
+
             # Update time and record history
             current_time += self.hvac.time_interval
             temperature_history.append((current_time, self.room.current_temp))
-            
+
             # Check if we can reach target
             if not self.can_reach_target():
                 break
-        
+
         # Prepare simulation results
         result = {
             "final_temperature": round(self.room.current_temp, 2),
@@ -601,9 +634,9 @@ class ChilledWaterSystemSimulator:
             "energy_consumed_kwh": round(energy_consumption / 1000, 3),
             "temperature_history": temperature_history
         }
-        
+
         # Restore original state
         self.room.current_temp = original_temp
         self.hvac.time_interval = original_time_interval
-        
+
         return result
