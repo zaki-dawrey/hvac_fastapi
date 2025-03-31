@@ -342,8 +342,35 @@ async def websocket_endpoint(websocket: WebSocket, system_type: str):
                             simulator.hvac.min_capacity_kw = float(
                                 params['minCapacityKw'])
                         if 'heatRecovery' in params:
-                            simulator.hvac.heat_recovery = bool(
-                                params['heatRecovery'])
+                            # Boolean conversion with explicit check
+                            heat_recovery = params['heatRecovery']
+                            if isinstance(heat_recovery, bool):
+                                simulator.hvac.heat_recovery = heat_recovery
+                            elif isinstance(heat_recovery, str):
+                                simulator.hvac.heat_recovery = heat_recovery.lower() == 'true'
+                            else:
+                                simulator.hvac.heat_recovery = bool(
+                                    heat_recovery)
+                        if 'heatRecoveryPercentage' in params:
+                            simulator.hvac.heat_recovery_percentage = float(
+                                params['heatRecoveryPercentage'])
+                        if 'timeInterval' in params:
+                            simulator.hvac.time_interval = float(
+                                params['timeInterval'])
+
+                        # Handle zones update
+                        if 'zones' in params:
+                            new_zones = params['zones']
+                            # Update existing zones
+                            simulator.hvac.zones = new_zones
+                            simulator.total_demand = sum(new_zones.values())
+
+                            # Re-initialize zone parameters
+                            simulator.zone_parameters = simulator._initialize_zone_parameters()
+
+                        # Update total demand
+                        simulator.total_demand = sum(
+                            simulator.hvac.zones.values())
 
                     if system_type == "heat-pump-system":
                         if 'copRated' in params:
@@ -370,6 +397,79 @@ async def websocket_endpoint(websocket: WebSocket, system_type: str):
                             simulator.hvac.refrigerant_type = params['refrigerantType']
 
                     print(f"Updated HVAC parameters for {client_id}")
+
+                elif data.get('type') == 'zone_parameters':
+                    params = data.get('data', {})
+                    zone_name = params.get('zone_name')
+
+                    if zone_name and zone_name in simulator.zone_parameters:
+                        # Update zone target temperature
+                        if 'target_temp' in params:
+                            simulator.adjust_zone_target_temp(
+                                zone_name, float(params['target_temp']))
+
+                        # Update zone mode (only if heat recovery is enabled)
+                        if 'mode' in params and simulator.hvac.heat_recovery:
+                            simulator.set_zone_mode(zone_name, params['mode'])
+
+                        # Send immediate feedback
+                        zone_status = simulator.get_zone_status(zone_name)
+                        await websocket.send_text(json.dumps({
+                            'type': 'zone_update',
+                            'data': {
+                                'zone_name': zone_name,
+                                'zone_status': zone_status
+                            }
+                        }))
+                        print(f"Updated zone parameters for {zone_name}")
+
+                elif data.get('type') == 'add_zone':
+                    params = data.get('data', {})
+                    zone_name = params.get(
+                        'name', f"Zone {len(simulator.hvac.zones) + 1}")
+                    demand_kw = float(params.get('demand', 5.0))
+                    target_temp = float(params.get(
+                        'target_temp', simulator.room.target_temp))
+
+                    # Add new zone
+                    success = simulator.add_zone(
+                        zone_name, demand_kw, target_temp)
+
+                    # Send feedback
+                    await websocket.send_text(json.dumps({
+                        'type': 'zone_operation',
+                        'data': {
+                            'action': 'add',
+                            'success': success,
+                            'zone_name': zone_name,
+                            'zones': simulator.hvac.zones,
+                            'zone_data': simulator.get_all_zone_status()
+                        }
+                    }))
+                    print(
+                        f"Added zone {zone_name}" if success else f"Failed to add zone {zone_name}")
+
+                elif data.get('type') == 'remove_zone':
+                    params = data.get('data', {})
+                    zone_name = params.get('name')
+
+                    if zone_name:
+                        # Remove zone
+                        success = simulator.remove_zone(zone_name)
+
+                        # Send feedback
+                        await websocket.send_text(json.dumps({
+                            'type': 'zone_operation',
+                            'data': {
+                                'action': 'remove',
+                                'success': success,
+                                'zone_name': zone_name,
+                                'zones': simulator.hvac.zones,
+                                'zone_data': simulator.get_all_zone_status()
+                            }
+                        }))
+                        print(
+                            f"Removed zone {zone_name}" if success else f"Failed to remove zone {zone_name}")
 
                 elif data.get('type') == 'get_status':
                     # Send immediate status update
@@ -436,95 +536,6 @@ async def websocket_endpoint(websocket: WebSocket, system_type: str):
         websockets.remove(websocket)
         # Keep simulator in memory for reconnection
         print(f"Client {client_id} disconnected")
-
-
-@app.post("/api/calculate/{system_type}")
-async def calculate_hvac(system_type: str, params: Dict = Body(...), client_id: Optional[str] = Query(None)):
-    """Update HVAC parameters and return system status."""
-
-    # Use existing simulator or create a new one
-    if client_id and client_id in simulators:
-        simulator = simulators[client_id]
-
-    # Update room parameters
-    simulator.room.length = float(params.get('length', 5.0))
-    simulator.room.breadth = float(params.get('breadth', 4.0))
-    simulator.room.height = float(params.get('height', 3.0))
-    simulator.room.current_temp = float(params.get('currentTemp', 25.0))
-    simulator.room.target_temp = float(params.get('targetTemp', 22.0))
-    simulator.room.external_temp = float(params.get('externalTemp', 35.0))
-    simulator.room.wall_insulation = params.get('wallInsulation', 'medium')
-    simulator.room.num_people = int(params.get('numPeople', 0))
-    simulator.room.mode = params.get('mode', "cooling")
-
-    # Update HVAC parameters
-    simulator.hvac.power = float(params.get('power', 3.5))
-    simulator.hvac.cop = float(params.get('cop', 3.0))
-    simulator.hvac.air_flow_rate = float(params.get('airFlowRate', 0.5))
-    simulator.hvac.fan_speed = float(params.get('fanSpeed', 50.0))
-    simulator.hvac.supply_temp = float(params.get('supplyTemp', 12.0))
-
-    # Handle chilled-water-system specific parameters
-    if system_type == "chilled-water-system":
-        if 'chilledWaterFlowRate' in params:
-            simulator.hvac.chilled_water_flow_rate = float(
-                params['chilledWaterFlowRate'])
-        if 'waterFlowRate' in params:  # Add this as an alternative name
-            simulator.hvac.chilled_water_flow_rate = float(
-                params['waterFlowRate'])
-        simulator.room.fan_coil_units = int(params.get('fanCoilUnits', 1))
-        simulator.hvac.chilled_water_flow_rate = float(
-            params.get('chilledWaterFlowRate', 0.5))
-        simulator.hvac.chilled_water_supply_temp = float(
-            params.get('chilledWaterSupplyTemp', 7.0))
-        simulator.hvac.chilled_water_return_temp = float(
-            params.get('chilledWaterReturnTemp', 12.0))
-        simulator.hvac.pump_power = float(params.get('pumpPower', 0.75))
-        simulator.hvac.primary_secondary_loop = bool(
-            params.get('primarySecondaryLoop', True))
-        simulator.hvac.glycol_percentage = float(
-            params.get('glycolPercentage', 0))
-        simulator.hvac.heat_exchanger_efficiency = float(
-            params.get('heatExchangerEfficiency', 0.85))
-
-    if system_type == "heat-pump-system":
-        simulator.hvac.cop_rated = float(params.get('copRated', 3.5))
-        simulator.hvac.cop_min = float(params.get('copMin', 3.5))
-        simulator.hvac.supply_temp_cooling = float(
-            params.get('supplyTempCooling', 12.0))
-        simulator.hvac.supply_temp_heating = float(
-            params.get('supplyTempHeating', 12.0))
-        simulator.hvac.defrost_temp_threshold = float(
-            params.get('defrostTempThreshold', 12.0))
-        simulator.hvac.defrost_cycle_time = float(
-            params.get('defrostCycleTime', 12.0))
-        simulator.hvac.defrost_interval = float(
-            params.get('defrostInterval', 12.0))
-        simulator.hvac.refrigerant_type = params.get(
-            'refrigerantType', 'R410A')
-        if 'copRated' in params:
-            simulator.hvac.cop_rated = float(params['copRated'])
-        if 'copMin' in params:
-            simulator.hvac.cop_min = float(params['copMin'])
-        if 'supplyTempCooling' in params:
-            simulator.hvac.supply_temp_cooling = float(
-                params['supplyTempCooling'])
-        if 'supplyTempHeating' in params:
-            simulator.hvac.supply_temp_heating = float(
-                params['supplyTempHeating'])
-        if 'defrostTempThreshold' in params:
-            simulator.hvac.defrost_temp_threshold = float(
-                params['defrostTempThreshold'])
-        if 'defrostCycleTime' in params:
-            simulator.hvac.defrost_cycle_time = float(
-                params['defrostCycleTime'])
-        if 'defrostInterval' in params:
-            simulator.hvac.defrost_interval = float(params['defrostInterval'])
-        if 'refrigerantType' in params:
-            simulator.hvac.refrigerant_type = params['refrigerantType']
-
-    # Return current system status
-    return simulator.get_system_status()
 
 
 @app.on_event("startup")
