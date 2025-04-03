@@ -12,6 +12,15 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from simulators.simulator_factory import SimulatorFactory
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# Configure MQTT settings from environment
+MQTT_BROKER = os.environ.get("MQTT_BROKER", "localhost")
+MQTT_PORT = int(os.environ.get("MQTT_PORT", 1883))
+MQTT_TOPIC = os.environ.get("MQTT_TOPIC", "sensor/temperature")
 
 
 class MonitoredDict(dict):
@@ -92,7 +101,7 @@ mqtt_client = mqtt.Client()
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=os.environ.get("ALLOWED_ORIGINS", "*").split(","),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
