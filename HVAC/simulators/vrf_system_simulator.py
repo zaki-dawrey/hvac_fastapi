@@ -31,7 +31,6 @@ class ZoneParameters:
     humidity: float = 50.0  # Current humidity (%)
     num_people: int = 0  # Number of people in zone
     heat_gain_external: float = 0.0  # External heat gain specific to this zone
-    mode: str = None
 
 
 @dataclass
@@ -45,10 +44,9 @@ class VRFHVACParameters:
     # Dictionary of zone names and their loads in kW
     zones: Dict[str, float] = None
     heat_recovery: bool = False  # Whether system has heat recovery capability
-    heat_recovery_percentage: float = 1.0  # Default heat recovery percentage
     air_flow_rate: float = 0.5  # m³/s
     supply_temp: float = 12.0  # °C
-    fan_speed: float = 50.0  # Fan speed percentage
+    fan_speed: float = 100.0  # Fan speed percentage
     time_interval: float = 1.0  # Simulation update interval in seconds
 
 
@@ -59,29 +57,26 @@ class VRFSystemSimulator:
         self.specific_heat_air = 1.005  # kJ/kg·K
         self.air_density = 1.225  # kg/m³
         self.debug_info = []  # To store debug information during calculations
-        self.hvac.zones = self.hvac.zones or {"Zone 1": 5.0}
+        self.hvac.zones = self.hvac.zones or {"main": 5.0}
         self.total_demand = sum(hvac.zones.values()) if hvac.zones else 0
         self.simulation_history = []  # Store history of simulation data
         self.simulation_time = 0.0  # Track total simulation time
+
         # Initialize zone parameters
         self.zone_parameters = self._initialize_zone_parameters()
+
         self.validate_inputs()
 
     def _initialize_zone_parameters(self) -> Dict[str, ZoneParameters]:
         """Initialize zone parameters based on hvac.zones."""
         zone_params = {}
         total_demand = sum(self.hvac.zones.values())
-        # If heat recovery is enabled, set up some zones for heating and some for cooling
-        mixed_mode = self.hvac.heat_recovery and len(self.hvac.zones) > 1
-        for i, (zone_name, demand) in enumerate(self.hvac.zones.items()):
+
+        for zone_name, demand in self.hvac.zones.items():
             # Calculate area percentage based on demand proportion
             area_percentage = (demand / total_demand) * \
                 100 if total_demand > 0 else 0
-            # For heat recovery systems with multiple zones, alternate modes for demonstration
-            zone_mode = self.room.mode
-            if mixed_mode:
-                # Alternate between heating and cooling for demo purposes
-                zone_mode = "cooling" if i % 2 == 0 else "heating"
+
             # Create ZoneParameters object for each zone
             zone_params[zone_name] = ZoneParameters(
                 name=zone_name,
@@ -92,31 +87,36 @@ class VRFSystemSimulator:
                 humidity=self.room.humidity,          # Initialize with room humidity
                 num_people=int(self.room.num_people * area_percentage /
                                100) if self.room.num_people > 0 else 0,
-                heat_gain_external=self.room.heat_gain_external * area_percentage / 100,
-                mode=zone_mode  # Use the determined mode
+                heat_gain_external=self.room.heat_gain_external * area_percentage / 100
             )
-            return zone_params
+
+        return zone_params
 
     def validate_inputs(self):
         """Validate input parameters and set defaults if necessary."""
         # Validate room dimensions
         if any(dim <= 0 for dim in [self.room.length, self.room.breadth, self.room.height]):
             raise ValueError("Room dimensions must be positive values")
+
         # Validate temperature settings
         if not -50 <= self.room.current_temp <= 50 or not -50 <= self.room.target_temp <= 50:
             raise ValueError(
                 "Temperature values should be between -50°C and 50°C")
+
         # Validate mode
         if self.room.mode.lower() not in ["cooling", "heating"]:
             raise ValueError("Mode must be either 'cooling' or 'heating'")
+
         # Validate insulation
         if isinstance(self.room.wall_insulation, str) and self.room.wall_insulation.lower() not in ["low", "medium", "high"]:
             self.room.wall_insulation = "medium"
             print("Warning: Invalid insulation value. Set to 'medium'")
+
         # Validate fan speed
         if not 0 <= self.hvac.fan_speed <= 100:
             self.hvac.fan_speed = max(0, min(100, self.hvac.fan_speed))
             print(f"Warning: Fan speed adjusted to {self.hvac.fan_speed}%")
+
         # Calculate power if not provided
         if self.hvac.power is None:
             self.hvac.power = self.hvac.max_capacity_kw / self.hvac.cop
@@ -134,89 +134,93 @@ class VRFSystemSimulator:
     def calculate_cooling_capacity(self, at_temp=None) -> float:
         """Calculate cooling capacity in Watts with VRF system logic."""
         temp = at_temp if at_temp is not None else self.room.current_temp
+
         # Calculate maximum available capacity based on temperature
         max_capacity = self.hvac.max_capacity_kw * 1000  # Convert to Watts
         min_capacity = self.hvac.min_capacity_kw * 1000  # Convert to Watts
+
         # Calculate required capacity based on load
         required_capacity = self.total_demand * 1000  # Convert kW to Watts
+
         # Consider heat recovery if enabled
-        if self.hvac.heat_recovery:
-            # Calculate cooling and heating demands separately
-            cooling_demand = 0
-            heating_demand = 0
-            for zone_name, zone in self.zone_parameters.items():
-                # Use zone's specific mode if available, otherwise use room mode
-                zone_mode = zone.mode if zone.mode else self.room.mode.lower()
-                zone_demand = self.hvac.zones.get(
-                    zone_name, 0) * 1000  # Convert to Watts
-                if zone_mode == "cooling":
-                    cooling_demand += zone_demand
-                else:  # heating mode
-                    heating_demand += zone_demand
-            # Calculate recoverable heat (limited by the smaller of cooling/heating demands)
-            recoverable_heat = min(
-                cooling_demand, heating_demand) * (self.hvac.heat_recovery_percentage / 100)
-            # Adjust required capacity by recovered heat
-            required_capacity = cooling_demand + heating_demand - recoverable_heat
+        if self.hvac.heat_recovery and self.room.mode.lower() == "cooling":
+            recovered_heat = self.total_demand * 0.3 * 1000  # Assume 30% heat recovery
+            required_capacity -= recovered_heat
+
         # Ensure capacity is within system limits
         effective_capacity = max(min_capacity, min(
             required_capacity, max_capacity))
+
         # Adjust for fan speed
         return effective_capacity * (self.hvac.fan_speed / 100.0)
 
     def calculate_zone_cooling_capacity(self, zone_name: str, at_temp=None) -> float:
         """Calculate cooling capacity allocated to a specific zone in Watts."""
         total_capacity = self.calculate_cooling_capacity(at_temp)
+
         # Get zone demand
         zone_demand = self.hvac.zones.get(zone_name, 0)
+
         # Calculate proportion of capacity allocated to this zone
         if self.total_demand > 0:
             zone_proportion = zone_demand / self.total_demand
         else:
             zone_proportion = 0
+
         return total_capacity * zone_proportion
 
     def calculate_heat_gain(self, at_temp=None) -> float:
         """Calculate total heat gain in Watts."""
         temp = at_temp if at_temp is not None else self.room.current_temp
+
         # Calculate surface area
         surface_area = 2 * (
             self.room.length * self.room.breadth
             + self.room.length * self.room.height
             + self.room.breadth * self.room.height
         )
+
         # Get insulation factor based on level
         insulation_factors = {
             "low": 0.8,
             "medium": 0.5,
             "high": 0.3
         }
-
         if isinstance(self.room.wall_insulation, str):
             insulation_factor = insulation_factors.get(
                 self.room.wall_insulation.lower(), 0.5)
         else:
             insulation_factor = 0.5  # Default insulation factor if invalid
+
         # Calculate environmental heat gain
         temperature_difference = self.room.external_temp - temp
         environmental_gain = surface_area * insulation_factor * temperature_difference
+
         # Add heat from people (approximately 100W per person)
         people_heat = self.room.num_people * 100
+
         # Add external heat gain (from sunlight, appliances, etc)
         total_heat_gain = environmental_gain + \
             people_heat + self.room.heat_gain_external
+
         return total_heat_gain
 
     def calculate_zone_heat_gain(self, zone_name: str, at_temp=None) -> float:
         """Calculate heat gain for a specific zone in Watts."""
         if zone_name not in self.zone_parameters:
             return 0.0
+
         zone = self.zone_parameters[zone_name]
         temp = at_temp if at_temp is not None else zone.current_temp
+
         # Calculate surface area proportion for this zone
         zone_area_proportion = zone.area_percentage / 100
         surface_area = 2 * (
-            self.room.length * self.room.breadth + self.room.length * self.room.height + self.room.breadth * self.room.height) * zone_area_proportion
+            self.room.length * self.room.breadth
+            + self.room.length * self.room.height
+            + self.room.breadth * self.room.height
+        ) * zone_area_proportion
+
         # Get insulation factor based on level
         insulation_factors = {
             "low": 0.8,
@@ -225,55 +229,22 @@ class VRFSystemSimulator:
         }
         insulation_factor = insulation_factors.get(
             self.room.wall_insulation.lower(), 0.5)
+
         # Calculate environmental heat gain for zone
         temperature_difference = self.room.external_temp - temp
         environmental_gain = surface_area * insulation_factor * temperature_difference
+
         # Add heat from people in this zone
         people_heat = zone.num_people * 100
+
         # Add external heat gain specific to this zone
         total_heat_gain = environmental_gain + people_heat + zone.heat_gain_external
+
         return total_heat_gain
 
-    def set_zone_mode(self, zone_name: str, mode: str) -> bool:
-        """
-        Set the operation mode for a specific zone.
-        Only effective when heat recovery is enabled.
-        Returns True if successful.
-        """
-        if zone_name not in self.zone_parameters:
-            return False
-        if mode.lower() not in ["heating", "cooling"]:
-            return False
-        self.zone_parameters[zone_name].mode = mode.lower()
-        return True
-
     def calculate_energy_consumption(self, cooling_capacity: float) -> float:
-        """Calculate energy consumption in Watts, considering heat recovery and part-load performance."""
-        # Get adjusted COP based on part-load ratio
-        adjusted_cop = self.calculate_part_load_cop()
-        # Base energy consumption calculation
-        base_consumption = cooling_capacity / adjusted_cop
-        # For heat recovery, account for actual energy saved by calculating recovered heat
-        if self.hvac.heat_recovery:
-            # Calculate total cooling and heating needs
-            cooling_demand = 0
-            heating_demand = 0
-            for zone_name, zone in self.zone_parameters.items():
-                zone_mode = zone.mode if zone.mode else self.room.mode.lower()
-                zone_demand = self.hvac.zones.get(
-                    zone_name, 0) * 1000  # Convert to Watts
-                if zone_mode == "cooling":
-                    cooling_demand += zone_demand
-                else:  # heating mode
-                    heating_demand += zone_demand
-            # Calculate recoverable heat (limited by the smaller of cooling/heating demands)
-            recoverable_heat = min(
-                cooling_demand, heating_demand) * (self.hvac.heat_recovery_percentage / 100)
-            # Adjust energy consumption based on recovered heat
-            energy_savings = recoverable_heat / self.hvac.cop
-            return max(0, base_consumption - energy_savings)
-        else:
-            return base_consumption
+        """Calculate energy consumption in Watts."""
+        return cooling_capacity / self.hvac.cop
 
     def calculate_refrigerant_flow(self, cooling_capacity: float) -> float:
         """Calculate refrigerant flow rate in g/s."""
@@ -287,56 +258,40 @@ class VRFSystemSimulator:
         # Calculate components at specified temperature
         cooling_capacity = self.calculate_cooling_capacity(at_temp=temp)
         heat_gain = self.calculate_heat_gain(at_temp=temp)
+
         # Calculate temperature difference from target
         temp_diff = abs(temp - self.room.target_temp)
+
         # Modified slowdown factor - less aggressive reduction
         slowdown_factor = 1.0  # Removed artificial slowdown
-        # Calculate net heat based on mode and heat recovery
-        if self.hvac.heat_recovery:
-            # Sum heat gain/loss across zones with different modes
-            cooling_zones_heat = 0
-            heating_zones_heat = 0
-            for zone_name, zone in self.zone_parameters.items():
-                zone_mode = zone.mode if zone.mode else self.room.mode.lower()
-                zone_net_heat = self.calculate_zone_net_heat_at_temp(
-                    zone_name, temp)
-                if zone_mode == "cooling":
-                    cooling_zones_heat += zone_net_heat
-                else:  # heating mode
-                    heating_zones_heat += zone_net_heat
-            # With heat recovery, cooling heat can offset heating needs
-            recoverable_heat = min(abs(cooling_zones_heat), abs(
-                heating_zones_heat)) * (self.hvac.heat_recovery_percentage / 100)
-            if self.room.mode.lower() == "heating":
-                net_heat = heat_gain + cooling_capacity - recoverable_heat
-            else:  # cooling mode
-                net_heat = heat_gain - cooling_capacity + recoverable_heat
-        else:
-            # Standard calculation without heat recovery
-            if self.room.mode.lower() == "heating":
-                net_heat = heat_gain + cooling_capacity
-            else:  # cooling mode
-                net_heat = heat_gain - cooling_capacity
+
+        # Calculate net heat based on mode
+        if self.room.mode.lower() == "heating":
+            # In heating mode, cooling_capacity is actually heating capacity
+            net_heat = heat_gain + cooling_capacity
+        else:  # cooling mode
+            net_heat = heat_gain - cooling_capacity
+
         return net_heat
 
     def calculate_zone_net_heat_at_temp(self, zone_name: str, temp: float) -> float:
         """Calculate net heat transfer for a specific zone (in Watts) at a specific temperature."""
-        zone = self.zone_parameters.get(zone_name)
-        if not zone:
-            return 0.0
         # Calculate components at specified temperature for this zone
         cooling_capacity = self.calculate_zone_cooling_capacity(
             zone_name, at_temp=temp)
         heat_gain = self.calculate_zone_heat_gain(zone_name, at_temp=temp)
-        # Determine mode for this zone - use zone mode if heat recovery is enabled,
-        # otherwise use room mode
-        zone_mode = zone.mode if (
-            self.hvac.heat_recovery and zone.mode) else self.room.mode.lower()
-        # Calculate net heat based on zone's mode
-        if zone_mode == "heating":
+
+        zone = self.zone_parameters.get(zone_name)
+        if not zone:
+            return 0.0
+
+        # Calculate net heat based on mode
+        if self.room.mode.lower() == "heating":
+            # In heating mode, cooling_capacity is actually heating capacity
             net_heat = heat_gain + cooling_capacity
         else:  # cooling mode
             net_heat = heat_gain - cooling_capacity
+
         return net_heat
 
     def calculate_temp_change_rate(self, temp: float) -> float:
@@ -349,33 +304,43 @@ class VRFSystemSimulator:
         """Calculate rate of temperature change for a specific zone (°C/s)."""
         if zone_name not in self.zone_parameters:
             return 0.0
+
         zone = self.zone_parameters[zone_name]
+
         # Calculate zone's air mass based on its proportion of the room
         zone_air_mass = self.room_air_mass * (zone.area_percentage / 100)
+
         # Calculate net heat for this zone
         net_heat = self.calculate_zone_net_heat_at_temp(zone_name, temp)
+
         # Calculate rate of temperature change
         if zone_air_mass > 0:
             rate = net_heat / (zone_air_mass * self.specific_heat_air * 1000)
         else:
             rate = 0
+
         return rate
 
     def calculate_temperature_change(self) -> float:
         """Calculate new room temperature after one time step (in seconds)."""
+        # If we're within a very small threshold of target, set to exact target
         if abs(self.room.current_temp - self.room.target_temp) < 0.1:
             return self.room.target_temp
+
         # Get temperature change rate
         rate = self.calculate_temp_change_rate(self.room.current_temp)
+
         # Apply time interval
         temp_change = rate * self.hvac.time_interval
+
         new_temp = self.room.current_temp + temp_change
+
         # Check if we're approaching or moving away from target
         approaching_target = (
             (self.room.mode.lower() == "cooling" and new_temp < self.room.current_temp) or
-            (self.room.mode.lower() ==
-             "heating" and new_temp > self.room.current_temp)
+            (self.room.mode.lower() == "heating" and new_temp > self.room.current_temp)
         )
+
         # Handle approaching target to prevent oscillation
         if approaching_target:
             # Prevent overshooting target temperature
@@ -391,64 +356,53 @@ class VRFSystemSimulator:
     def calculate_zone_temperature_change(self, zone_name: str) -> float:
         """Calculate new zone temperature after one time step."""
         if zone_name not in self.zone_parameters:
-            return 0.0
+            return self.room.current_temp
+
         zone = self.zone_parameters[zone_name]
+
         # If we're within a very small threshold of target, set to exact target
         if abs(zone.current_temp - zone.target_temp) < 0.1:
             return zone.target_temp
+
         # Get temperature change rate for this zone
         rate = self.calculate_zone_temp_change_rate(
             zone_name, zone.current_temp)
+
         # Apply time interval
         temp_change = rate * self.hvac.time_interval
+
         new_temp = zone.current_temp + temp_change
+
         # Check if we're approaching or moving away from target
-        approaching_target = ((self.room.mode.lower() == "cooling" and new_temp < zone.current_temp) or (
-            self.room.mode.lower() == "heating" and new_temp > zone.current_temp))
+        approaching_target = (
+            (self.room.mode.lower() == "cooling" and new_temp < zone.current_temp) or
+            (self.room.mode.lower() == "heating" and new_temp > zone.current_temp)
+        )
+
         # Handle approaching target to prevent oscillation
         if approaching_target:
-            # If we're getting very close to target, slow down to avoid overshooting
-            if abs(new_temp - zone.target_temp) < 0.3:
-                # Gradual approach to target
-                new_temp = zone.current_temp + (temp_change * 0.5)
-            # If we've overshot the target, set to target
-            if (cooling_mode := self.room.mode.lower() == "cooling"):
-                if new_temp < zone.target_temp:
-                    new_temp = zone.target_temp
+            # Prevent overshooting target temperature
+            if self.room.mode.lower() == "cooling":
+                return max(zone.target_temp, new_temp)
             else:  # heating mode
-                if new_temp > zone.target_temp:
-                    new_temp = zone.target_temp
-        # Update the zone's current temperature
-        zone.current_temp = new_temp
-        return new_temp
-
-    def calculate_part_load_cop(self) -> float:
-        """Calculate COP adjustment for part-load operation."""
-        cooling_capacity = self.calculate_cooling_capacity()
-        max_capacity = self.hvac.max_capacity_kw * 1000
-        # Calculate part-load ratio
-        part_load_ratio = cooling_capacity / max_capacity if max_capacity > 0 else 1.0
-        # VRF systems typically have improved COP at part load (up to ~40-60% load)
-        # and reduced COP at very low loads (<20%)
-        if 0.3 <= part_load_ratio <= 0.7:
-            # Better efficiency in the "sweet spot" range
-            return self.hvac.cop * 1.15
-        elif part_load_ratio < 0.2:
-            # Reduced efficiency at very low loads
-            return self.hvac.cop * 0.85
+                return min(zone.target_temp, new_temp)
         else:
-            return self.hvac.cop
+            # We're moving away from target (system can't reach it)
+            # Return new temp to accurately model behavior
+            return new_temp
 
     def can_reach_target(self) -> bool:
         """Determine if the system can reach the target temperature."""
         # Check if we're already at target
         if abs(self.room.current_temp - self.room.target_temp) < 0.1:
             return True
+
         # Direction we need to move (cooling = negative rate, heating = positive rate)
         desired_rate_sign = -1 if self.room.mode.lower() == "cooling" else 1
+
         # Check if the system can move in the right direction at current temp
-        current_rate = self.calculate_temp_change_rate(
-            self.room.current_temp)
+        current_rate = self.calculate_temp_change_rate(self.room.current_temp)
+
         # If rate sign matches desired direction, we're making progress
         # Also check if rate is significant enough (not practically zero)
         return (current_rate * desired_rate_sign) > 1e-6
@@ -457,15 +411,20 @@ class VRFSystemSimulator:
         """Determine if a specific zone can reach its target temperature."""
         if zone_name not in self.zone_parameters:
             return False
+
         zone = self.zone_parameters[zone_name]
+
         # Check if we're already at target
         if abs(zone.current_temp - zone.target_temp) < 0.1:
             return True
+
         # Direction we need to move (cooling = negative rate, heating = positive rate)
         desired_rate_sign = -1 if self.room.mode.lower() == "cooling" else 1
+
         # Check if the system can move in the right direction at current temp
         current_rate = self.calculate_zone_temp_change_rate(
             zone_name, zone.current_temp)
+
         # If rate sign matches desired direction, we're making progress
         return (current_rate * desired_rate_sign) > 1e-6
 
@@ -474,48 +433,62 @@ class VRFSystemSimulator:
         # If already at target, return 0
         if abs(self.room.current_temp - self.room.target_temp) < 0.1:
             return 0.0
+
         # Check if target can be reached
         if not self.can_reach_target():
             return float('inf')
+
         # Setup for numerical integration
         start_temp = self.room.current_temp
         target_temp = self.room.target_temp
         cooling_mode = self.room.mode.lower() == "cooling"
+
         # Determine direction of approach
         proper_direction = (cooling_mode and start_temp > target_temp) or (
             not cooling_mode and start_temp < target_temp)
         if not proper_direction:
             # Can't reach target if going in wrong direction
             return float('inf')
+
         # Clear debug info
         self.debug_info = []
+
         # Track current progress
         current_temp = start_temp
         total_time = 0.0
+
         # Use small, fixed time step for accurate integration
         time_step = 60.0  # 60 seconds per step
         max_time = 24 * 3600  # 24 hours max simulation
         max_steps = int(max_time / time_step)
+
         for step in range(max_steps):
             # Calculate rate at current temperature
             rate = self.calculate_temp_change_rate(current_temp)
+
             # Check if we can still make progress
             if (cooling_mode and rate >= 0) or (not cooling_mode and rate <= 0):
                 return float('inf')  # Can't reach target
+
             # Calculate temperature change for this time step
             temp_change = rate * time_step
             new_temp = current_temp + temp_change
+
             # Check if we've reached or passed the target
             if (cooling_mode and new_temp <= target_temp) or (not cooling_mode and new_temp >= target_temp):
                 # Interpolate exact time to reach target
                 if abs(rate) < 1e-6:
                     return float('inf')  # Prevent division by zero
+
                 remaining_temp_diff = abs(target_temp - current_temp)
                 remaining_time = remaining_temp_diff / abs(rate)
+
                 return round(total_time + remaining_time, 2)
+
             # Update for next iteration
             current_temp = new_temp
             total_time += time_step
+
             # Store debug info periodically
             if step % 10 == 0:
                 self.debug_info.append({
@@ -523,6 +496,7 @@ class VRFSystemSimulator:
                     "rate": rate,
                     "time_elapsed": total_time
                 })
+
         # If we get here, we couldn't reach target within max simulation time
         return float('inf')
 
@@ -530,51 +504,66 @@ class VRFSystemSimulator:
         """Calculate time for a specific zone to reach its target temperature."""
         if zone_name not in self.zone_parameters:
             return float('inf')
+
         zone = self.zone_parameters[zone_name]
+
         # If already at target, return 0
         if abs(zone.current_temp - zone.target_temp) < 0.1:
             return 0.0
+
         # Check if target can be reached
         if not self.can_zone_reach_target(zone_name):
             return float('inf')
+
         # Setup for numerical integration
         start_temp = zone.current_temp
         target_temp = zone.target_temp
         cooling_mode = self.room.mode.lower() == "cooling"
+
         # Determine direction of approach
         proper_direction = (cooling_mode and start_temp > target_temp) or (
             not cooling_mode and start_temp < target_temp)
         if not proper_direction:
             # Can't reach target if going in wrong direction
             return float('inf')
+
         # Track current progress
         current_temp = start_temp
         total_time = 0.0
+
         # Use small, fixed time step for accurate integration
         time_step = 60.0  # 60 seconds per step
         max_time = 24 * 3600  # 24 hours max simulation
         max_steps = int(max_time / time_step)
+
         for step in range(max_steps):
             # Calculate rate at current temperature
             rate = self.calculate_zone_temp_change_rate(
                 zone_name, current_temp)
+
             # Check if we can still make progress
             if (cooling_mode and rate >= 0) or (not cooling_mode and rate <= 0):
                 return float('inf')  # Can't reach target
+
             # Calculate temperature change for this time step
             temp_change = rate * time_step
             new_temp = current_temp + temp_change
+
             # Check if we've reached or passed the target
             if (cooling_mode and new_temp <= target_temp) or (not cooling_mode and new_temp >= target_temp):
                 # Interpolate exact time to reach target
                 if abs(rate) < 1e-6:
                     return float('inf')  # Prevent division by zero
+
                 remaining_temp_diff = abs(target_temp - current_temp)
                 remaining_time = remaining_temp_diff / abs(rate)
+
                 return round(total_time + remaining_time, 2)
+
             # Update for next iteration
             current_temp = new_temp
             total_time += time_step
+
         # If we get here, we couldn't reach target within max simulation time
         return float('inf')
 
@@ -583,10 +572,9 @@ class VRFSystemSimulator:
         cooling_capacity = self.calculate_cooling_capacity()
         energy_consumption = self.calculate_energy_consumption(
             cooling_capacity)
-        refrigerant_flow = self.calculate_refrigerant_flow(
-            cooling_capacity)
+        refrigerant_flow = self.calculate_refrigerant_flow(cooling_capacity)
         time_to_target = self.calculate_time_to_target()
-        heating_cooling_ratio = self.check_heating_cooling_ratio()
+
         return {
             "room_temperature": round(self.room.current_temp, 2),
             "target_temperature": self.room.target_temp,
@@ -619,21 +607,23 @@ class VRFSystemSimulator:
             # Add current simulation time
             "simulation_time": round(self.simulation_time, 2),
             # Add zone-specific data
-            "zone_data": self.get_all_zone_status(),
-            "heating_cooling_balance": heating_cooling_ratio,
+            "zone_data": self.get_all_zone_status()
         }
 
     def get_zone_status(self, zone_name: str) -> Dict[str, Any]:
         """Get status for a specific zone."""
         if zone_name not in self.zone_parameters:
             return {}
+
         zone = self.zone_parameters[zone_name]
+
         # Calculate zone-specific metrics
         cooling_capacity = self.calculate_zone_cooling_capacity(zone_name)
         energy_consumption = self.calculate_energy_consumption(
             cooling_capacity)
         heat_gain = self.calculate_zone_heat_gain(zone_name)
         time_to_target = self.calculate_zone_time_to_target(zone_name)
+
         return {
             "name": zone_name,
             "current_temperature": round(zone.current_temp, 2),
@@ -670,17 +660,19 @@ class VRFSystemSimulator:
             # Heating typically reduces humidity slightly
             humidity_change = -0.05 * \
                 abs(self.room.current_temp - self.hvac.supply_temp) / 10
+
         # Apply changes based on current humidity
         # Don't let humidity go below 20% or above 90%
-        new_humidity = max(
-            20, min(90, self.room.humidity + humidity_change))
+        new_humidity = max(20, min(90, self.room.humidity + humidity_change))
         return new_humidity
 
     def calculate_zone_humidity_change(self, zone_name: str) -> float:
         """Calculate humidity change for a specific zone."""
         if zone_name not in self.zone_parameters:
             return 50.0  # Default humidity
+
         zone = self.zone_parameters[zone_name]
+
         # This is a simplified model for humidity changes
         if self.room.mode.lower() == "cooling":
             # Cooling typically reduces humidity
@@ -690,6 +682,7 @@ class VRFSystemSimulator:
             # Heating typically reduces humidity slightly
             humidity_change = -0.05 * \
                 abs(zone.current_temp - self.hvac.supply_temp) / 10
+
         # Apply changes based on current humidity
         # Don't let humidity go below 20% or above 90%
         new_humidity = max(20, min(90, zone.humidity + humidity_change))
@@ -699,41 +692,17 @@ class VRFSystemSimulator:
         """Update room temperature and humidity based on current calculations."""
         # Update room temperature
         self.room.current_temp = self.calculate_temperature_change()
+
         # Update room humidity
         self.room.humidity = self.calculate_humidity_change()
+
         # Update all zone states
         for zone_name in self.zone_parameters:
             zone = self.zone_parameters[zone_name]
             zone.current_temp = self.calculate_zone_temperature_change(
                 zone_name)
             zone.humidity = self.calculate_zone_humidity_change(zone_name)
-        # Add temperature interactions between zones when heat recovery is enabled
-        if self.hvac.heat_recovery:
-            # Collect zones by their operating modes
-            cooling_zones = []
-            heating_zones = []
-            for zone_name, zone in self.zone_parameters.items():
-                zone_mode = zone.mode if zone.mode else self.room.mode.lower()
-                if zone_mode == "cooling":
-                    cooling_zones.append((zone_name, zone))
-                else:  # heating mode
-                    heating_zones.append((zone_name, zone))
-            # Process thermal interactions between zones with different modes
-            if cooling_zones and heating_zones:
-                for cooling_zone_name, cooling_zone in cooling_zones:
-                    for heating_zone_name, heating_zone in heating_zones:
-                        # Calculate heat transfer based on temperature difference
-                        temp_diff = cooling_zone.current_temp - heating_zone.current_temp
-                        if temp_diff > 0:  # Only transfer heat from warmer to cooler
-                            # Heat transfer proportional to temp difference and recovery efficiency
-                            heat_transfer = (
-                                temp_diff * 0.1) * (self.hvac.heat_recovery_percentage / 100)
-                            # Apply temperature adjustments (limit to prevent instability)
-                            max_adjustment = 0.2  # Maximum temperature change per time step
-                            cooling_zone.current_temp -= min(
-                                heat_transfer, max_adjustment)
-                            heating_zone.current_temp += min(
-                                heat_transfer, max_adjustment)
+
         # Update simulation time
         self.simulation_time += self.hvac.time_interval
 
@@ -741,19 +710,24 @@ class VRFSystemSimulator:
         """Run a single step of the simulation and return current status."""
         self.update_room_state()
         status = self.get_system_status()
+
         # Store status in history
         self.simulation_history.append(status)
+
         return status
 
     def run_simulation(self, duration: float) -> List[Dict[str, Any]]:
         """Run simulation for specified duration (in seconds) and return history."""
         # Calculate number of steps
         steps = math.ceil(duration / self.hvac.time_interval)
+
         # Clear previous history
         self.simulation_history = []
+
         # Run simulation steps
         for _ in range(steps):
             self.run_simulation_step()
+
         return self.simulation_history
 
     def run_to_target(self, max_duration: float = 3600) -> Dict[str, Any]:
@@ -763,27 +737,35 @@ class VRFSystemSimulator:
         """
         # Calculate number of steps
         steps = math.ceil(max_duration / self.hvac.time_interval)
+
         # Clear previous history
         self.simulation_history = []
+
         # Tolerance for considering target reached
         temp_tolerance = 0.2
+
         for _ in range(steps):
             status = self.run_simulation_step()
+
             # Check if we've reached target temperature (including zones)
             main_target_reached = abs(
                 self.room.current_temp - self.room.target_temp) <= temp_tolerance
+
             # Check if all zones have reached their targets
             all_zones_reached = True
             for zone_name, zone in self.zone_parameters.items():
                 if abs(zone.current_temp - zone.target_temp) > temp_tolerance:
                     all_zones_reached = False
                     break
+
             # If both main room and all zones have reached targets, we're done
             if main_target_reached and all_zones_reached:
                 break
+
             # Also break if we can't make progress
             if not self.can_reach_target():
                 break
+
         return self.get_system_status()
 
     def get_simulation_history(self) -> List[Dict[str, Any]]:
@@ -794,20 +776,24 @@ class VRFSystemSimulator:
         """Calculate how resources are distributed among zones."""
         zone_distribution = {}
         total_demand = sum(self.hvac.zones.values())
+
         for zone_name, demand in self.hvac.zones.items():
             if total_demand > 0:
                 proportion = demand / total_demand
             else:
                 proportion = 0
+
             # Calculate allocated capacity
             total_capacity = self.calculate_cooling_capacity()
             allocated_capacity = total_capacity * proportion
+
             zone_distribution[zone_name] = {
                 "demand_kw": demand,
                 "proportion": proportion,
                 "allocated_capacity_w": allocated_capacity,
                 "energy_consumption_w": self.calculate_energy_consumption(allocated_capacity)
             }
+
         return zone_distribution
 
     def adjust_zone_demand(self, zone_name: str, new_demand: float) -> bool:
@@ -817,12 +803,16 @@ class VRFSystemSimulator:
         """
         if zone_name not in self.hvac.zones:
             return False
+
         # Update zone demand
         self.hvac.zones[zone_name] = new_demand
+
         # Recalculate total demand
         self.total_demand = sum(self.hvac.zones.values())
+
         # Update zone parameters
         self._initialize_zone_parameters()
+
         return True
 
     def adjust_zone_target_temp(self, zone_name: str, target_temp: float) -> bool:
@@ -832,8 +822,10 @@ class VRFSystemSimulator:
         """
         if zone_name not in self.zone_parameters:
             return False
+
         # Update zone target temperature
         self.zone_parameters[zone_name].target_temp = target_temp
+
         return True
 
     def add_zone(self, zone_name: str, demand_kw: float, target_temp: float = None) -> bool:
@@ -843,17 +835,23 @@ class VRFSystemSimulator:
         """
         if zone_name in self.hvac.zones:
             return False
+
         # Set default target temperature if not provided
         if target_temp is None:
             target_temp = self.room.target_temp
+
         # Add zone to HVAC zones
         self.hvac.zones[zone_name] = demand_kw
+
         # Update total demand
         self.total_demand = sum(self.hvac.zones.values())
+
         # Reinitialize zone parameters to include the new zone
         self.zone_parameters = self._initialize_zone_parameters()
+
         # Update specific target temperature for this zone
         self.zone_parameters[zone_name].target_temp = target_temp
+
         return True
 
     def remove_zone(self, zone_name: str) -> bool:
@@ -863,15 +861,20 @@ class VRFSystemSimulator:
         """
         if zone_name not in self.hvac.zones:
             return False
+
         # Remove zone from HVAC zones
         del self.hvac.zones[zone_name]
+
         # Remove zone from zone parameters
         if zone_name in self.zone_parameters:
             del self.zone_parameters[zone_name]
+
         # Update total demand
         self.total_demand = sum(self.hvac.zones.values())
+
         # Reinitialize zone parameters with updated proportions
         self.zone_parameters = self._initialize_zone_parameters()
+
         return True
 
     def adjust_system_parameters(self, **kwargs):
@@ -882,41 +885,13 @@ class VRFSystemSimulator:
                 setattr(self.room, key, value)
             elif hasattr(self.hvac, key):
                 setattr(self.hvac, key, value)
+
         # Recalculate dependent parameters
         self.total_demand = sum(self.hvac.zones.values()
                                 ) if self.hvac.zones else 0
+
         # Validate inputs after changes
         self.validate_inputs()
-
-    def check_heating_cooling_ratio(self) -> Dict[str, float]:
-        """Check the ratio of heating to cooling demand and if it's within system capabilities."""
-        cooling_demand = 0
-        heating_demand = 0
-        for zone_name, zone in self.zone_parameters.items():
-            zone_mode = zone.mode if zone.mode else self.room.mode.lower()
-            zone_demand = self.hvac.zones.get(
-                zone_name, 0) * 1000  # Convert to Watts
-            if zone_mode == "cooling":
-                cooling_demand += zone_demand
-            else:  # heating mode
-                heating_demand += zone_demand
-        total_demand = cooling_demand + heating_demand
-        if total_demand > 0:
-            cooling_ratio = cooling_demand / total_demand
-            heating_ratio = heating_demand / total_demand
-            # Most VRF systems have limits on heating:cooling ratios
-            # Typical range might be 30:70 to 70:30
-            is_balanced = 0.3 <= cooling_ratio <= 0.7 and 0.3 <= heating_ratio <= 0.7
-            return {
-                "cooling_ratio": cooling_ratio,
-                "heating_ratio": heating_ratio,
-                "is_balanced": is_balanced
-            }
-        return {
-            "cooling_ratio": 0,
-            "heating_ratio": 0,
-            "is_balanced": True  # No demand means it's technically "balanced"
-        }
 
     def save_simulation_to_json(self, filepath: str):
         """Save simulation history to a JSON file."""
@@ -927,6 +902,7 @@ class VRFSystemSimulator:
             "simulation_history": self.simulation_history,
             "simulation_time": self.simulation_time
         }
+
         with open(filepath, 'w') as f:
             json.dump(data, f, indent=2)
 
@@ -935,21 +911,27 @@ class VRFSystemSimulator:
         """Load simulation from a JSON file."""
         with open(filepath, 'r') as f:
             data = json.load(f)
+
         # Create room parameters
         room = VRFRoomParameters(
             **{k: v for k, v in data["room_parameters"].items()})
+
         # Create HVAC parameters
         hvac_params = {k: v for k, v in data["hvac_parameters"].items()}
         hvac_params["zones"] = data["zones"]
         hvac = VRFHVACParameters(**hvac_params)
+
         # Create simulator
         simulator = cls(room, hvac)
+
         # Load simulation history if available
         if "simulation_history" in data:
             simulator.simulation_history = data["simulation_history"]
+
         # Load simulation time if available
         if "simulation_time" in data:
             simulator.simulation_time = data["simulation_time"]
+
         return simulator
 
     def generate_efficiency_report(self) -> Dict[str, Any]:
@@ -959,11 +941,13 @@ class VRFSystemSimulator:
         energy_consumption = self.calculate_energy_consumption(
             cooling_capacity)
         heat_gain = self.calculate_heat_gain()
+
         # Calculate efficiency metrics
         energy_efficiency_ratio = (
             cooling_capacity * 3.412) / energy_consumption if energy_consumption > 0 else 0
         watts_per_square_meter = energy_consumption / \
             (self.room.length * self.room.breadth)
+
         # Zone-specific efficiency
         zone_efficiency = {}
         for zone_name in self.zone_parameters:
@@ -971,12 +955,14 @@ class VRFSystemSimulator:
             zone_capacity = self.calculate_zone_cooling_capacity(zone_name)
             zone_energy = self.calculate_energy_consumption(zone_capacity)
             zone_heat_gain = self.calculate_zone_heat_gain(zone_name)
+
             # Calculate zone efficiency metrics
             zone_eer = (zone_capacity * 3.412) / \
                 zone_energy if zone_energy > 0 else 0
             zone_watts_per_sqm = zone_energy / \
                 ((self.room.length * self.room.breadth)
                  * (zone.area_percentage / 100))
+
             zone_efficiency[zone_name] = {
                 "cooling_capacity_btu": round(zone_capacity * 3.412, 2),
                 "energy_consumption_w": round(zone_energy, 2),
@@ -986,6 +972,7 @@ class VRFSystemSimulator:
                 "can_reach_target": self.can_zone_reach_target(zone_name),
                 "time_to_target_s": self.calculate_zone_time_to_target(zone_name)
             }
+
         return {
             "system_cop": self.hvac.cop,
             "total_cooling_capacity_btu": round(cooling_capacity * 3.412, 2),
@@ -1002,56 +989,65 @@ class VRFSystemSimulator:
     def _generate_improvement_recommendations(self) -> List[str]:
         """Generate recommendations for system improvements based on current state."""
         recommendations = []
+
         # Check if system is properly sized
         total_demand = self.total_demand * 1000  # Convert to W
         max_capacity = self.hvac.max_capacity_kw * 1000
+
         if total_demand > max_capacity * 0.9:
             recommendations.append(
                 "System is undersized for the total demand. Consider upgrading to a higher capacity unit.")
         elif total_demand < max_capacity * 0.5:
             recommendations.append(
                 "System may be oversized for the current demand, which can reduce efficiency. Consider a smaller unit or adding more zones.")
+
         # Check insulation level
         if self.room.wall_insulation.lower() == "low":
             recommendations.append(
                 "Upgrading wall insulation would significantly reduce heat gain/loss and improve efficiency.")
+
         # Check for heat recovery
         if not self.hvac.heat_recovery and len(self.hvac.zones) > 1:
             recommendations.append(
                 "Adding heat recovery capability would improve efficiency in a multi-zone setup.")
+
         # Check target temperature vs external temperature
         temp_diff = abs(self.room.target_temp - self.room.external_temp)
         if temp_diff > 15 and self.room.mode.lower() == "cooling":
             recommendations.append(
                 "Large temperature difference between target and external temperature. Consider a more moderate target temperature to improve efficiency.")
+
         # Check zones that cannot reach target
         unreachable_zones = []
         for zone_name in self.zone_parameters:
             if not self.can_zone_reach_target(zone_name):
                 unreachable_zones.append(zone_name)
+
         if unreachable_zones:
             zone_list = ", ".join(unreachable_zones)
             recommendations.append(
                 f"The following zones cannot reach their target temperatures: {zone_list}. Consider adjusting zone demands or target temperatures.")
+
         return recommendations
 
 
-#  def example_usage():
-# """Example usage of the VRF simulator with zones."""#
-#  Create room parameters#
-# room = VRFRoomParameters(
-#          length=10.0,
-#          breadth=8.0,
-#          height=3.0,
-#          current_temp=30.0,
-#          target_temp=24.0,
-#          external_temp=35.0,
-#          wall_insulation="medium",
-#          humidity=60.0,
-#          num_people=5,
-#          heat_gain_external=500.0,
-#          mode="cooling"
-#      )
+# def example_usage():
+#     """Example usage of the VRF simulator with zones."""
+#     # Create room parameters
+#     room = VRFRoomParameters(
+#         length=10.0,
+#         breadth=8.0,
+#         height=3.0,
+#         current_temp=30.0,
+#         target_temp=24.0,
+#         external_temp=35.0,
+#         wall_insulation="medium",
+#         humidity=60.0,
+#         num_people=5,
+#         heat_gain_external=500.0,
+#         mode="cooling"
+#     )
+
 #     # Create HVAC parameters with zones
 #     hvac = VRFHVACParameters(
 #         max_capacity_kw=14.0,
