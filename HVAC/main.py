@@ -5,6 +5,7 @@ import os
 import math
 import json
 import datetime
+from dotenv import load_dotenv
 from typing import Set, Dict, Optional
 import paho.mqtt.client as mqtt
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Body, Query
@@ -174,12 +175,12 @@ async def root():
     return FileResponse(os.path.join(static_dir, "index.html"))
 
 
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket, system_type: str):
+@app.websocket("/ws/{user_id}/{system_type}")
+async def websocket_endpoint(websocket: WebSocket, user_id: str, system_type: str,):
     """WebSocket endpoint for HVAC simulation control and data."""
     await websocket.accept()
 
-    client_id = system_type
+    client_id = f"{user_id}_{system_type}"
 
     # Store client_id with the websocket
     websocket.client_id = client_id
