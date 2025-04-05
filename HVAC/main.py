@@ -1,4 +1,5 @@
 """FastAPI application for HVAC simulation control and monitoring."""
+# Author: Zaki Dawrey- Testing
 
 import asyncio
 import os
@@ -93,7 +94,7 @@ mqtt_client = mqtt.Client()
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=['*'],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
