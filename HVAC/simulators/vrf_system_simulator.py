@@ -36,19 +36,15 @@ class ZoneParameters:
 @dataclass
 class VRFHVACParameters:
     power: float = 3.5  # Rated power consumption in kW
-    # Maximum system capacity in kW (default 14kW)
-    max_capacity_kw: float = 14.0
-    # Minimum system capacity in kW (default 3kW)
-    min_capacity_kw: float = 3.0
+    max_capacity_kw: float = 14.0  # Maximum system capacity in kW
+    min_capacity_kw: float = 3.0  # Minimum system capacity in kW
     cop: float = 3.0  # Coefficient of Performance
-    # Dictionary of zone names and their loads in kW
-    zones: Dict[str, float] = None
+    zones: Dict[str, float] = None  # Dictionary of zone names and their loads in kW
     heat_recovery: bool = False  # Whether system has heat recovery capability
     air_flow_rate: float = 0.5  # m³/s
     supply_temp: float = 12.0  # °C
     fan_speed: float = 100.0  # Fan speed percentage
     time_interval: float = 1.0  # Simulation update interval in seconds
-
 
 class VRFSystemSimulator:
     def __init__(self, room: VRFRoomParameters, hvac: VRFHVACParameters):
@@ -1093,7 +1089,7 @@ class VRFSystemSimulator:
 
 #     # Print recommendations
 #     print("\nRecommended improvements:")
-#     for recommendation in efficiency_report['recommended_improvements']:
+#     for recommendation in efficiency_report['recommended_improvements']:3
 #         print(f"- {recommendation}")
 
 #     # Save simulation to file
