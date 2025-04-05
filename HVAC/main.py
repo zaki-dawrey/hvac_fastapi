@@ -94,7 +94,7 @@ mqtt_client = mqtt.Client()
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[os.getenv("ALLOWED_ORIGINS", "https://hvac-zaki-main.vercel.app")],
+    allow_origins=['*'],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
