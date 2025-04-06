@@ -410,6 +410,216 @@ class HeatPumpSystemSimulator:
         # If we get here, we couldn't reach target within max simulation time
         return float('inf')
 
+    def check_for_failures(self) -> dict:
+        """Check for potential heat pump system failures based on current conditions."""
+        failures = {}
+
+        # Environmental/capacity issues
+        room_volume = self.room_volume
+        required_capacity = room_volume * 0.1  # rough estimate: 100W per cubic meter
+        actual_capacity = abs(
+            self.calculate_heating_cooling_capacity()) / 1000  # in kW
+        mode = self.room.mode.lower()
+
+        # Undersized system
+        if actual_capacity < required_capacity * 0.7:
+            failures['undersized'] = {
+                'probability': 0.9,
+                'message': f'System capacity ({actual_capacity:.1f}kW) insufficient for room size ({room_volume:.1f}m³).',
+                'severity': 'high',
+                'solution': f'Increase system power from {self.hvac.power}kW to at least {required_capacity:.1f}kW to match room size.'
+            }
+
+        # Heat pump specific - External temperature too extreme
+        if mode == "heating" and self.room.external_temp < -15:
+            failures['extreme_low_temp'] = {
+                # Scales from 0.7 to 1 as temp goes from -15 to -25
+                'probability': min(1.0, 0.7 + (abs(self.room.external_temp + 15) / 10) * 0.3),
+                'message': f'Heat pump operating in extreme cold ({self.room.external_temp}°C). Efficiency severely reduced.',
+                'severity': 'high',
+                'solution': 'Consider auxiliary heating or a heat pump rated for extreme cold weather conditions.'
+            }
+        elif mode == "cooling" and self.room.external_temp > 43:
+            failures['extreme_high_temp'] = {
+                # Scales from 0.7 to 1 as temp goes from 43 to 50
+                'probability': min(1.0, 0.7 + ((self.room.external_temp - 43) / 7) * 0.3),
+                'message': f'System operating above rated conditions ({self.room.external_temp}°C).',
+                'severity': 'medium',
+                'solution': 'Increase system power or improve shade around outdoor unit to compensate for extreme conditions.'
+            }
+
+        # Frequent defrosting in heating mode
+        if mode == "heating" and 0 < self.room.external_temp < self.hvac.defrost_temp_threshold:
+            failures['frequent_defrost'] = {
+                'probability': 0.8,
+                'message': f'System operating in temperature range that requires frequent defrost cycles ({self.room.external_temp}°C).',
+                'severity': 'medium',
+                'solution': 'Expect reduced efficiency due to defrost cycles. Consider setting a higher defrost temperature threshold.'
+            }
+
+        # Low COP condition
+        actual_cop = self.calculate_cop()
+        if actual_cop < self.hvac.cop_min * 1.2:
+            failures['low_cop'] = {
+                'probability': 0.9,
+                'message': f'System operating with very low COP ({actual_cop:.1f}) near minimum threshold.',
+                'severity': 'medium',
+                'solution': 'Current external temperature conditions are leading to inefficient operation. Consider auxiliary heating.'
+            }
+
+        # Calculate net heat to detect if system is struggling
+        net_heat = self.calculate_net_heat_at_temp(self.room.current_temp)
+        if (mode == "cooling" and net_heat > 0) or (mode == "heating" and net_heat < 0):
+            failures['capacity_exceeded'] = {
+                'probability': min(1.0, abs(net_heat) / 1000),
+                'message': f'{mode.capitalize()} demand exceeds system capacity. Room will not reach target temperature.',
+                'severity': 'medium',
+                'solution': 'Increase system power, reduce heat load, or improve wall insulation.'
+            }
+
+        # Fan speed too low for high power
+        if self.hvac.fan_speed < 30 and self.hvac.power > 2:
+            failures['fan_speed_low'] = {
+                'probability': 0.85,
+                'message': 'Fan speed too low for selected power rating, reducing efficiency and increasing wear.',
+                'severity': 'medium',
+                'solution': 'Increase fan speed to at least 50% for optimal airflow and heat exchange.'
+            }
+
+        # Fan speed too high for small room
+        if self.hvac.fan_speed > 90 and room_volume < 30:
+            failures['fan_speed_high'] = {
+                'probability': 0.7,
+                'message': 'Fan speed too high for room size, causing excess noise and energy waste.',
+                'severity': 'low',
+                'solution': 'Reduce fan speed to 60-70% for this room size to optimize efficiency and comfort.'
+            }
+
+        # Poor insulation with high external temperature differential
+        temp_diff = abs(self.room.external_temp - self.room.current_temp)
+        if self.room.wall_insulation.lower() == "low" and temp_diff > 15:
+            failures['poor_insulation'] = {
+                'probability': 0.85,
+                'message': 'Poor insulation causing significant heat transfer with high temperature differential.',
+                'severity': 'medium',
+                'solution': 'Upgrade wall insulation from low to medium or high to improve efficiency.'
+            }
+
+        # System oversized for room
+        if actual_capacity > required_capacity * 2:
+            failures['oversized'] = {
+                'probability': 0.7,
+                'message': f'System capacity ({actual_capacity:.1f}kW) significantly exceeds room requirements ({required_capacity:.1f}kW).',
+                'severity': 'low',
+                'solution': 'Consider a smaller system or modulating capacity for more efficient operation and better humidity control.'
+            }
+
+        # Too many people for room size
+        people_density = self.room.num_people / \
+            (self.room.length * self.room.breadth)
+        if people_density > 0.5:  # More than 1 person per 2 square meters
+            failures['overcrowding'] = {
+                'probability': min(0.9, people_density - 0.3),
+                'message': f'High occupant density ({self.room.num_people} people) for room size.',
+                'severity': 'medium',
+                'solution': f'Reduce number of people or increase system power to handle additional heat load.'
+            }
+
+        # Incorrect refrigerant for heat pump operation
+        if self.hvac.refrigerant_type not in ["R410A", "R32", "R290"]:
+            failures['invalid_refrigerant'] = {
+                'probability': 1.0,
+                'message': f'Unrecognized refrigerant type: {self.hvac.refrigerant_type}.',
+                'severity': 'high',
+                'solution': 'Use a supported refrigerant type (R410A, R32, or R290).'
+            }
+
+        # Inefficient mode selection
+        if (mode == "cooling" and self.room.current_temp < self.room.external_temp - 5) or \
+           (mode == "heating" and self.room.current_temp > self.room.external_temp + 5):
+            failures['inefficient_mode'] = {
+                'probability': 0.6,
+                'message': f'Current mode ({mode}) may be inefficient given temperature conditions.',
+                'severity': 'low',
+                'solution': f'Consider changing mode or adjusting target temperature for more efficient operation.'
+            }
+
+        # Target temperature unrealistic
+        if (mode == "cooling" and self.room.target_temp < 18) or \
+           (mode == "heating" and self.room.target_temp > 30):
+            failures['unrealistic_target'] = {
+                'probability': 0.75,
+                'message': f'Target temperature ({self.room.target_temp}°C) requires excessive energy consumption.',
+                'severity': 'medium',
+                'solution': 'Set a more moderate target temperature (20-26°C) for optimal efficiency.'
+            }
+
+        # Supply temperature issue for heating mode
+        if mode == "heating" and self.hvac.supply_temp_heating < 35:
+            failures['low_heating_supply_temp'] = {
+                'probability': 0.8,
+                'message': f'Supply temperature ({self.hvac.supply_temp_heating}°C) too low for effective heating.',
+                'severity': 'medium',
+                'solution': 'Increase supply temperature to at least 35°C for effective heating.'
+            }
+        elif mode == "cooling" and self.hvac.supply_temp_cooling > 18:
+            failures['high_cooling_supply_temp'] = {
+                'probability': 0.7,
+                'message': f'Supply temperature ({self.hvac.supply_temp_cooling}°C) too high for effective cooling and dehumidification.',
+                'severity': 'medium',
+                'solution': 'Decrease supply temperature to 12-15°C for effective cooling and humidity control.'
+            }
+
+        # Airflow rate mismatch with system power
+        expected_airflow = self.hvac.power * 0.2  # rough estimate: 0.2 m³/s per kW
+        if self.hvac.air_flow_rate < expected_airflow * 0.6:
+            failures['low_airflow'] = {
+                'probability': 0.8,
+                'message': 'Airflow rate too low for system power rating, reducing efficiency and heat exchange.',
+                'severity': 'medium',
+                'solution': f'Increase airflow rate to at least {expected_airflow:.2f} m³/s to match system power.'
+            }
+
+        # Large temperature differential between current and target
+        temp_diff_target = abs(self.room.current_temp - self.room.target_temp)
+        if temp_diff_target > 15:
+            failures['large_temp_differential'] = {
+                'probability': min(0.9, temp_diff_target / 20),
+                'message': f'Large temperature differential ({temp_diff_target:.1f}°C) between current and target.',
+                'severity': 'medium',
+                'solution': 'Set a more moderate target or increase system power for faster temperature change.'
+            }
+
+        # Incorrect mode for temperature differential
+        if (mode == "cooling" and self.room.current_temp < self.room.target_temp) or \
+           (mode == "heating" and self.room.current_temp > self.room.target_temp):
+            failures['incorrect_mode'] = {
+                'probability': 1.0,
+                'message': f'System mode ({mode}) opposite to required direction for target temperature.',
+                'severity': 'high',
+                'solution': f'Change mode from {mode} to {"heating" if mode == "cooling" else "cooling"}.'
+            }
+
+        # Defrost threshold too high
+        if mode == "heating" and self.hvac.defrost_temp_threshold > 8:
+            failures['high_defrost_threshold'] = {
+                'probability': 0.7,
+                'message': f'Defrost temperature threshold ({self.hvac.defrost_temp_threshold}°C) set too high.',
+                'severity': 'low',
+                'solution': 'Lower defrost temperature threshold to 2-5°C for more efficient operation.'
+            }
+
+        # High humidity and insufficient dehumidification in cooling mode
+        if mode == "cooling" and self.room.humidity > 70:
+            failures['high_humidity'] = {
+                'probability': 0.75,
+                'message': f'High humidity level ({self.room.humidity}%) may cause discomfort and reduce cooling perception.',
+                'severity': 'medium',
+                'solution': 'Lower the cooling supply temperature or consider a separate dehumidifier.'
+            }
+
+        return failures
+
     def get_system_status(self) -> Dict[str, Any]:
         """Get current system status and calculations."""
         capacity = self.calculate_heating_cooling_capacity()
@@ -417,6 +627,9 @@ class HeatPumpSystemSimulator:
         energy_consumption = self.calculate_energy_consumption(capacity)
         refrigerant_flow = self.calculate_refrigerant_flow(capacity)
         time_to_target = self.calculate_time_to_target()
+        failures = self.check_for_failures()
+        active_failures = {k: v for k,
+                           v in failures.items() if v['probability'] > 0.5}
 
         return {
             "room_temperature": round(self.room.current_temp, 2),
@@ -447,5 +660,11 @@ class HeatPumpSystemSimulator:
             "temp_change_rate": round(self.calculate_temp_change_rate(self.room.current_temp) * 3600, 4),
             "rated_power_kw": self.hvac.power,
             "refrigerant_type": self.hvac.refrigerant_type,
-            "supply_temperature": round(self.supply_temp, 1)
+            "supply_temperature": round(self.supply_temp, 1),
+            "failures": failures,
+            "active_failures": active_failures,
+            "has_critical_failure": any(f['severity'] == 'high' and f['probability'] > 0.7 for f in failures.values()),
+            "warnings": [f['message'] for f in failures.values() if 0.3 < f['probability'] <= 0.7],
+            "critical_alerts": [f['message'] for f in failures.values() if f['probability'] > 0.7]
+
         }
