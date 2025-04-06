@@ -6,6 +6,7 @@ from .chilled_water_system_simulator import ChilledWaterSystemSimulator, Chilled
 
 
 class SimulatorFactory:
+    """Factory class to create HVAC system simulators based on the system type"""
     @staticmethod
     def create_simulator(system_type: str, room_params: Dict[str, Any], hvac_params: Dict[str, Any]):
         """Create and return the appropriate simulator based on system type"""
@@ -118,18 +119,19 @@ class SimulatorFactory:
 
         elif system_type == "variable-refrigerant-flow-system":
             room = VRFRoomParameters(
-        length=float(room_params.get('length', 5.0)),
-        breadth=float(room_params.get('breadth', 4.0)),
-        height=float(room_params.get('height', 3.0)),
-        current_temp=float(room_params.get('current_temp', 25.0)),
-        target_temp=float(room_params.get('target_temp', 22.0)),
-        external_temp=float(room_params.get('external_temp', 35.0)),
-        wall_insulation=room_params.get('wall_insulation', 'medium'),
-        humidity=float(room_params.get('humidity', 50.0)),
-        num_people=int(room_params.get('num_people', 0)),
-        heat_gain_external=float(room_params.get('heat_gain_external', 0.0)),
-        mode=room_params.get('mode', 'cooling')
-    )
+                length=float(room_params.get('length', 5.0)),
+                breadth=float(room_params.get('breadth', 4.0)),
+                height=float(room_params.get('height', 3.0)),
+                current_temp=float(room_params.get('current_temp', 25.0)),
+                target_temp=float(room_params.get('target_temp', 22.0)),
+                external_temp=float(room_params.get('external_temp', 35.0)),
+                wall_insulation=room_params.get('wall_insulation', 'medium'),
+                humidity=float(room_params.get('humidity', 50.0)),
+                num_people=int(room_params.get('num_people', 0)),
+                heat_gain_external=float(
+                    room_params.get('heat_gain_external', 0.0)),
+                mode=room_params.get('mode', 'cooling')
+            )
 
     # Convert zones to proper format if provided
         zones = {}
@@ -138,7 +140,7 @@ class SimulatorFactory:
         else:
             # Default zone if none provided
             zones = {"Zone 1": 5.0}
-        
+
         hvac = VRFHVACParameters(
             power=float(hvac_params.get('power', 3.5)),
             max_capacity_kw=float(hvac_params.get('max_capacity_kw', 14.0)),
