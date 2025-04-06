@@ -39,12 +39,14 @@ class VRFHVACParameters:
     max_capacity_kw: float = 14.0  # Maximum system capacity in kW
     min_capacity_kw: float = 3.0  # Minimum system capacity in kW
     cop: float = 3.0  # Coefficient of Performance
-    zones: Dict[str, float] = None  # Dictionary of zone names and their loads in kW
+    # Dictionary of zone names and their loads in kW
+    zones: Dict[str, float] = None
     heat_recovery: bool = False  # Whether system has heat recovery capability
     air_flow_rate: float = 0.5  # m³/s
     supply_temp: float = 12.0  # °C
     fan_speed: float = 100.0  # Fan speed percentage
     time_interval: float = 1.0  # Simulation update interval in seconds
+
 
 class VRFSystemSimulator:
     def __init__(self, room: VRFRoomParameters, hvac: VRFHVACParameters):
@@ -563,6 +565,196 @@ class VRFSystemSimulator:
         # If we get here, we couldn't reach target within max simulation time
         return float('inf')
 
+    def check_for_failures(self) -> dict:
+        """Check for potential VRF system failures based on current conditions."""
+        failures = {}
+
+        # Environmental/capacity issues
+        room_volume = self.room_volume
+        required_capacity = room_volume * 0.1  # rough estimate: 100W per cubic meter
+        actual_capacity = self.hvac.max_capacity_kw  # in kW
+
+        # Undersized system - compare to total demand
+        if actual_capacity < self.total_demand * 0.9:
+            failures['undersized'] = {
+                'probability': min(1.0, (self.total_demand - actual_capacity) / (actual_capacity * 0.2 + 0.1)),
+                'message': f'System capacity ({actual_capacity:.1f}kW) insufficient for total zone demand ({self.total_demand:.1f}kW).',
+                'severity': 'high',
+                'solution': f'Increase system capacity from {actual_capacity}kW to at least {self.total_demand * 1.1:.1f}kW to handle all zones.'
+            }
+
+        # Extreme temperature operation
+        if self.room.external_temp > 43:
+            failures['extreme_temp'] = {
+                # scales from 0 to 1 as temp goes from 43 to 50
+                'probability': (self.room.external_temp - 43) / 7,
+                'message': f'System operating above rated conditions ({self.room.external_temp}°C).',
+                'severity': 'medium',
+                'solution': 'Lower external temperature setting or increase system capacity to compensate for extreme conditions.'
+            }
+
+        # VRF-specific: Too many zones for system capacity
+        if len(self.zone_parameters) > 0:
+            avg_zone_capacity = actual_capacity / len(self.zone_parameters)
+            if avg_zone_capacity < 1.0 and len(self.zone_parameters) > 4:
+                failures['too_many_zones'] = {
+                    'probability': min(1.0, 1.0 - avg_zone_capacity/1.5),
+                    'message': f'Too many zones ({len(self.zone_parameters)}) for system capacity ({actual_capacity:.1f}kW).',
+                    'severity': 'medium',
+                    'solution': f'Reduce number of zones or increase system capacity to at least {len(self.zone_parameters) * 1.5:.1f}kW.'
+                }
+
+        # VRF-specific: Zone balancing issues
+        zone_demands = [z.demand_kw for z in self.zone_parameters.values()]
+        if zone_demands:
+            max_demand = max(zone_demands)
+            min_demand = min(zone_demands)
+            if max_demand > min_demand * 5 and len(zone_demands) > 1:
+                failures['zone_imbalance'] = {
+                    'probability': min(0.9, max_demand / (min_demand * 5)),
+                    'message': f'Significant zone demand imbalance (max: {max_demand:.1f}kW, min: {min_demand:.1f}kW).',
+                    'severity': 'medium',
+                    'solution': 'Redistribute zone demands more evenly or consider a system with better modulation capability.'
+                }
+
+        # Fan speed too low
+        if self.hvac.fan_speed < 30 and self.hvac.max_capacity_kw > 5:
+            failures['fan_speed_low'] = {
+                'probability': 0.9,
+                'message': 'Fan speed too low for selected capacity rating, reducing efficiency.',
+                'severity': 'medium',
+                'solution': 'Increase fan speed to at least 50% for optimal airflow.'
+            }
+
+        # Poor insulation with high external temperature differential
+        temp_diff = abs(self.room.external_temp - self.room.current_temp)
+        if self.room.wall_insulation.lower() == "low" and temp_diff > 15:
+            failures['poor_insulation'] = {
+                'probability': 0.85,
+                'message': 'Poor insulation causing significant heat transfer with high temperature differential.',
+                'severity': 'medium',
+                'solution': 'Upgrade wall insulation from low to medium or high to improve efficiency.'
+            }
+
+        # System oversized for total demand
+        if actual_capacity > self.total_demand * 2.5:
+            failures['oversized'] = {
+                'probability': 0.7,
+                'message': f'System capacity ({actual_capacity:.1f}kW) significantly exceeds total demand ({self.total_demand:.1f}kW).',
+                'severity': 'low',
+                'solution': 'Consider reducing system capacity or adding more zones for more efficient operation.'
+            }
+
+        # VRF-specific: Heat recovery could be beneficial but isn't enabled
+        if not self.hvac.heat_recovery:
+            # Check if we have mixed mode operation potential
+            has_cooling_zones = False
+            has_heating_zones = False
+
+            for zone in self.zone_parameters.values():
+                if zone.current_temp > zone.target_temp:
+                    has_cooling_zones = True
+                if zone.current_temp < zone.target_temp:
+                    has_heating_zones = True
+
+            if has_cooling_zones and has_heating_zones:
+                failures['missing_heat_recovery'] = {
+                    'probability': 0.95,
+                    'message': 'System has mixed heating/cooling demands but heat recovery is not enabled.',
+                    'severity': 'medium',
+                    'solution': 'Enable heat recovery to improve efficiency with mixed mode operation.'
+                }
+
+        # Too many people for room size
+        people_density = self.room.num_people / \
+            (self.room.length * self.room.breadth)
+        if people_density > 0.5:  # More than 1 person per 2 square meters
+            failures['overcrowding'] = {
+                'probability': min(0.9, people_density - 0.3),
+                'message': f'High occupant density ({self.room.num_people} people) for room size.',
+                'severity': 'medium',
+                'solution': f'Reduce number of people or increase system capacity to handle additional heat load.'
+            }
+
+        # Inefficient mode selection
+        if (self.room.mode.lower() == "cooling" and self.room.current_temp < self.room.external_temp - 5) or \
+           (self.room.mode.lower() == "heating" and self.room.current_temp > self.room.external_temp + 5):
+            failures['inefficient_mode'] = {
+                'probability': 0.6,
+                'message': f'Current mode ({self.room.mode}) may be inefficient given temperature conditions.',
+                'severity': 'low',
+                'solution': f'Consider changing mode or adjusting target temperature for more efficient operation.'
+            }
+
+        # Unrealistic target temperatures in zones
+        extreme_targets = []
+        for zone_name, zone in self.zone_parameters.items():
+            if (self.room.mode.lower() == "cooling" and zone.target_temp < 18) or \
+               (self.room.mode.lower() == "heating" and zone.target_temp > 30):
+                extreme_targets.append(f"{zone_name} ({zone.target_temp}°C)")
+
+        if extreme_targets:
+            failures['unrealistic_zone_targets'] = {
+                'probability': 0.75,
+                'message': f'Extreme target temperatures in zones: {", ".join(extreme_targets)}.',
+                'severity': 'medium',
+                'solution': 'Set more moderate target temperatures (20-26°C) for optimal efficiency.'
+            }
+
+        # Airflow rate mismatch with system capacity
+        expected_airflow = self.hvac.max_capacity_kw * \
+            0.18  # rough estimate: 0.18 m³/s per kW for VRF
+        if self.hvac.air_flow_rate < expected_airflow * 0.6:
+            failures['low_airflow'] = {
+                'probability': 0.8,
+                'message': 'Airflow rate too low for system capacity rating, reducing efficiency.',
+                'severity': 'medium',
+                'solution': f'Increase airflow rate to at least {expected_airflow:.2f} m³/s to match system capacity.'
+            }
+
+        # VRF-specific: Min capacity too high for low load conditions
+        min_zone_demand = min(
+            z.demand_kw for z in self.zone_parameters.values()) if self.zone_parameters else 0
+        if min_zone_demand < self.hvac.min_capacity_kw * 0.5 and min_zone_demand > 0:
+            failures['high_min_capacity'] = {
+                'probability': min(0.9, 1.0 - (min_zone_demand / (self.hvac.min_capacity_kw * 0.5))),
+                'message': f'Minimum capacity ({self.hvac.min_capacity_kw:.1f}kW) too high for smallest zone ({min_zone_demand:.1f}kW).',
+                'severity': 'medium',
+                'solution': 'Lower system minimum capacity or combine smaller zones for better modulation.'
+            }
+
+        # VRF-specific: Supply temperature too extreme
+        if self.room.mode.lower() == "cooling" and self.hvac.supply_temp < 8:
+            failures['supply_temp_too_low'] = {
+                'probability': min(0.85, (8 - self.hvac.supply_temp) / 4),
+                'message': f'Supply temperature ({self.hvac.supply_temp}°C) is too low for efficient operation.',
+                'severity': 'medium',
+                'solution': 'Increase supply temperature to 10-12°C for better efficiency and comfort.'
+            }
+        elif self.room.mode.lower() == "heating" and self.hvac.supply_temp > 45:
+            failures['supply_temp_too_high'] = {
+                'probability': min(0.85, (self.hvac.supply_temp - 45) / 10),
+                'message': f'Supply temperature ({self.hvac.supply_temp}°C) is too high for efficient operation.',
+                'severity': 'medium',
+                'solution': 'Decrease supply temperature to 35-40°C for better efficiency and comfort.'
+            }
+
+        # Check for zones that cannot reach target
+        unreachable_zones = []
+        for zone_name, zone in self.zone_parameters.items():
+            if not self.can_zone_reach_target(zone_name):
+                unreachable_zones.append(zone_name)
+
+        if unreachable_zones:
+            failures['unreachable_zones'] = {
+                'probability': 0.95,
+                'message': f'The following zones cannot reach target temperature: {", ".join(unreachable_zones)}.',
+                'severity': 'high',
+                'solution': 'Adjust zone demand allocation, increase system capacity, or set more realistic target temperatures.'
+            }
+
+        return failures
+
     def get_system_status(self) -> Dict[str, Any]:
         """Get current system status and calculations."""
         cooling_capacity = self.calculate_cooling_capacity()
@@ -570,6 +762,9 @@ class VRFSystemSimulator:
             cooling_capacity)
         refrigerant_flow = self.calculate_refrigerant_flow(cooling_capacity)
         time_to_target = self.calculate_time_to_target()
+        failures = self.check_for_failures()
+        active_failures = {k: v for k,
+                           v in failures.items() if v['probability'] > 0.5}
 
         return {
             "room_temperature": round(self.room.current_temp, 2),
@@ -603,7 +798,13 @@ class VRFSystemSimulator:
             # Add current simulation time
             "simulation_time": round(self.simulation_time, 2),
             # Add zone-specific data
-            "zone_data": self.get_all_zone_status()
+            "zone_data": self.get_all_zone_status(),
+            "failures": failures,
+            "active_failures": active_failures,
+            "has_critical_failure": any(f['severity'] == 'high' and f['probability'] > 0.7 for f in failures.values()),
+            "warnings": [f['message'] for f in failures.values() if 0.3 < f['probability'] <= 0.7],
+            "critical_alerts": [f['message'] for f in failures.values() if f['probability'] > 0.7]
+
         }
 
     def get_zone_status(self, zone_name: str) -> Dict[str, Any]:
